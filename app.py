@@ -1,90 +1,112 @@
 import streamlit as st
 import yfinance as yf
-import numpy as np
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 
-@st.cache_data(ttl=3600)
-def get_stock_data(ticker, period="1y"):
-    try:
-        data = yf.Ticker(ticker).history(period=period)
-        if data.empty:
-            st.error("No data found for this ticker.")
-            return None
-        return data
-    except Exception as e:
-        st.error(f"Error fetching data: {e}")
-        return None
+st.title("Stock Price Prediction with Technical Indicators")
 
-def calculate_indicators(df):
-    df['MA20'] = df['Close'].rolling(window=20).mean()
-    df['Volume_MA20'] = df['Volume'].rolling(window=20).mean()
-    
-    # RSI Calculation
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-    
-    # MACD Calculation
-    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
-    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = ema12 - ema26
-    df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    
-    return df
+ticker = st.text_input("Enter Stock Ticker (e.g. AAPL):", "AAPL")
+period = "6mo"
 
-def plot_stock_with_indicators(df, ticker):
-    st.subheader(f"{ticker} Price with Indicators")
-    
-    fig, axs = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+@st.cache_data
+def get_stock_data(ticker, period="6mo"):
+    data = yf.Ticker(ticker).history(period=period)
+    data['MA20'] = data['Close'].rolling(window=20).mean()
+    delta = data['Close'].diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(window=14).mean()
+    avg_loss = loss.rolling(window=14).mean()
+    rs = avg_gain / avg_loss
+    data['RSI'] = 100 - (100 / (1 + rs))
+    exp1 = data['Close'].ewm(span=12, adjust=False).mean()
+    exp2 = data['Close'].ewm(span=26, adjust=False).mean()
+    data['MACD'] = exp1 - exp2
+    data['Signal_Line'] = data['MACD'].ewm(span=9, adjust=False).mean()
+    data['Volume_MA20'] = data['Volume'].rolling(window=20).mean()
+    return data.dropna()
+
+def plot_indicators(df):
+    fig, axs = plt.subplots(4, 1, figsize=(10, 12), sharex=True)
     
     # Price + MA20
     axs[0].plot(df.index, df['Close'], label='Close Price')
-    axs[0].plot(df.index, df['MA20'], label='MA 20')
-    axs[0].set_ylabel("Price ($)")
+    axs[0].plot(df.index, df['MA20'], label='MA20')
+    axs[0].set_title('Price and 20-day Moving Average')
     axs[0].legend()
-    axs[0].set_title(f"{ticker} Close Price & Moving Average")
     
     # RSI
-    axs[1].plot(df.index, df['RSI'], label='RSI', color='purple')
+    axs[1].plot(df.index, df['RSI'], label='RSI', color='orange')
     axs[1].axhline(70, color='red', linestyle='--')
     axs[1].axhline(30, color='green', linestyle='--')
-    axs[1].set_ylabel("RSI")
-    axs[1].legend()
-    axs[1].set_title("Relative Strength Index")
+    axs[1].set_title('Relative Strength Index (RSI)')
     
-    # MACD + Signal Line
-    axs[2].plot(df.index, df['MACD'], label='MACD', color='blue')
-    axs[2].plot(df.index, df['Signal_Line'], label='Signal Line', color='orange')
-    axs[2].set_ylabel("MACD")
+    # MACD and Signal Line
+    axs[2].plot(df.index, df['MACD'], label='MACD', color='purple')
+    axs[2].plot(df.index, df['Signal_Line'], label='Signal Line', color='blue')
+    axs[2].set_title('MACD and Signal Line')
     axs[2].legend()
-    axs[2].set_title("MACD Indicator")
-    
-    st.pyplot(fig)
     
     # Volume + Volume MA20
-    st.subheader("Volume and Volume Moving Average")
-    fig_vol, ax_vol = plt.subplots(figsize=(12,3))
-    ax_vol.bar(df.index, df['Volume'], label='Volume')
-    ax_vol.plot(df.index, df['Volume_MA20'], label='Volume MA 20', color='red')
-    ax_vol.set_ylabel("Volume")
-    ax_vol.legend()
-    st.pyplot(fig_vol)
+    axs[3].bar(df.index, df['Volume'], label='Volume', color='grey')
+    axs[3].plot(df.index, df['Volume_MA20'], label='Volume MA20', color='red')
+    axs[3].set_title('Volume and 20-day Volume MA')
+    axs[3].legend()
+    
+    plt.tight_layout()
+    st.pyplot(fig)
 
-def main():
-    st.title("Advanced Stock Analysis with Momentum & Volume Indicators")
-    ticker = st.text_input("Enter stock ticker (e.g., AAPL)", value="AAPL")
-    period = st.selectbox("Select data period", ["1mo", "3mo", "6mo", "1y", "2y", "5y"], index=3)
+def generate_signal_and_estimate(df):
+    last = df.iloc[-1]
+    score = 0
 
-    if ticker:
+    # Price vs MA20
+    if last['Close'] > last['MA20']:
+        score += 1
+    else:
+        score -= 1
+
+    # RSI
+    if last['RSI'] < 30:
+        score += 1
+    elif last['RSI'] > 70:
+        score -= 1
+
+    # MACD crossover
+    if df['MACD'].iloc[-2] < df['Signal_Line'].iloc[-2] and last['MACD'] > last['Signal_Line']:
+        score += 1
+    elif df['MACD'].iloc[-2] > df['Signal_Line'].iloc[-2] and last['MACD'] < last['Signal_Line']:
+        score -= 1
+
+    # Volume confirmation
+    if last['Volume'] > last['Volume_MA20']:
+        score += 0.5
+    else:
+        score -= 0.5
+
+    # Interpretation
+    if score >= 2:
+        direction = "likely to rise"
+    elif score <= -2:
+        direction = "likely to fall"
+    else:
+        direction = "uncertain"
+
+    # Estimate expected % change over next month (~20 trading days)
+    returns = df['Close'].pct_change().tail(20)
+    avg_return = returns.mean()
+    expected_move = avg_return * 20 * 100  # in percentage
+
+    return direction, expected_move
+
+if ticker:
+    try:
         df = get_stock_data(ticker, period)
-        if df is not None:
-            df = calculate_indicators(df)
-            plot_stock_with_indicators(df, ticker)
-        else:
-            st.warning("Could not load stock data.")
-        
-if __name__ == "__main__":
-    main()
+        plot_indicators(df)
+        direction, expected_pct = generate_signal_and_estimate(df)
+        st.markdown(f"### Prediction: The stock price is **{direction}** over the next month.")
+        st.markdown(f"Estimated expected price change: **{expected_pct:.2f}%**")
+    except Exception as e:
+        st.error(f"Error fetching data or calculating indicators: {e}")
+
