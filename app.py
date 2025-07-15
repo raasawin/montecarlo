@@ -10,11 +10,12 @@ from sklearn.metrics import mean_squared_error
 st.set_page_config(layout="wide", page_title="Stock Price Forecast (MC + ML)")
 
 # --------------------------------------
-# Fetch stock data
+# Fetch stock data (Fixed cache handling)
 # --------------------------------------
 @st.cache_data(ttl=3600)
-def get_stock_data(ticker, period="1y"):
-    data = yf.Ticker(ticker).history(period=period)
+def get_stock_data(ticker_symbol, period="1y"):
+    ticker = yf.Ticker(ticker_symbol)
+    data = ticker.history(period=period)
     data.dropna(inplace=True)
     return data
 
