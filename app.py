@@ -2,7 +2,6 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
@@ -45,10 +44,10 @@ def monte_carlo_simulation(S0, mu, sigma, T, N, M):
     return simulations
 
 # --------------------------------------
-# ML Model
+# ML Model (multi-day ahead prediction)
 # --------------------------------------
-def train_random_forest(df):
-    df['Target'] = df['Close'].shift(-1)
+def train_random_forest(df, n_days_ahead):
+    df['Target'] = df['Close'].shift(-n_days_ahead)
     features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change']
     df = df.dropna()
     X = df[features]
@@ -96,12 +95,13 @@ try:
     st.write(f"**Median price**: ${p50:.2f} ({(p50 - latest_close)/latest_close:.2%})")
     st.write(f"**95th percentile price**: ${p95:.2f} ({(p95 - latest_close)/latest_close:.2%})")
 
-    # Run ML prediction
-    model, rmse, predicted_price, actual_price = train_random_forest(df)
+    # Run ML prediction with n_days ahead target
+    model, rmse, predicted_price, actual_price = train_random_forest(df, n_days)
     ml_change_pct = (predicted_price - latest_close) / latest_close * 100
 
-    st.subheader("Machine Learning Prediction (Next Day Close)")
+    st.subheader(f"Machine Learning Prediction ({n_days}-Day Close)")
     st.write(f"**Predicted Price**: ${predicted_price:.2f}")
+    st.write(f"**Actual Price (last test sample)**: ${actual_price:.2f}")
     st.write(f"**RMSE**: ${rmse:.2f}")
     st.write(f"**Expected Price Change**: {ml_change_pct:+.2f}%")
 
@@ -117,3 +117,4 @@ try:
 
 except Exception as e:
     st.error(f"Error loading data: {e}")
+
