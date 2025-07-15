@@ -2,7 +2,5 @@ streamlit
 yfinance
 pandas
 numpy
-ta
-vaderSentiment
-requests
-beautifulsoup4
+matplotlib
+scikit-learn
