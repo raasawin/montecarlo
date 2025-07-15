@@ -66,7 +66,7 @@ def train_random_forest(df):
 st.sidebar.title("Settings")
 ticker = st.sidebar.text_input("Enter Stock Ticker", "AAPL")
 period = st.sidebar.selectbox("Historical Data Period", ["6mo", "1y", "2y", "5y"], index=1)
-n_simulations = st.sidebar.slider("Number of Monte Carlo Simulations", 100, 2000, 500, step=100)
+n_simulations = st.sidebar.slider("Number of Monte Carlo Simulations", 100, 10000, 500, step=100)
 n_days = st.sidebar.slider("Days into the Future", 10, 180, 30, step=10)
 
 # --------------------------------------
@@ -92,11 +92,6 @@ try:
     p95 = np.percentile(final_prices, 95)
 
     st.subheader("Monte Carlo Simulation Results")
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(sim_data, color='skyblue', alpha=0.05)
-    ax.set_title(f"{n_simulations} Simulations of {n_days}-Day Forecast")
-    st.pyplot(fig)
-
     st.write(f"**5th percentile price**: ${p5:.2f} ({(p5 - latest_close)/latest_close:.2%})")
     st.write(f"**Median price**: ${p50:.2f} ({(p50 - latest_close)/latest_close:.2%})")
     st.write(f"**95th percentile price**: ${p95:.2f} ({(p95 - latest_close)/latest_close:.2%})")
