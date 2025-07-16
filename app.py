@@ -54,9 +54,10 @@ def train_random_forest(df, n_days_ahead, bootstrap_iters=1000):
     X = df[features]
     y = df['Target']
 
+    # Split historical data for RMSE
     X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
 
-    # Grid Search with TimeSeriesSplit
+    # Time series-aware grid search
     param_grid = {
         'n_estimators': [100, 200],
         'max_depth': [None, 5, 10]
@@ -67,20 +68,25 @@ def train_random_forest(df, n_days_ahead, bootstrap_iters=1000):
 
     best_model = model.best_estimator_
     y_pred = best_model.predict(X_test)
-
-    # Bootstrapping for confidence interval
-    last_features = X_test.iloc[[-1]]
-    preds = []
-    for _ in range(bootstrap_iters):
-        X_res, y_res = resample(X_train, y_train)
-        rf = RandomForestRegressor(**best_model.get_params())
-        rf.fit(X_res, y_res)
-        preds.append(rf.predict(last_features)[0])
-    ci_lower = np.percentile(preds, 2.5)
-    ci_upper = np.percentile(preds, 97.5)
-
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-    return best_model, rmse, preds[-1], y_test.values[-1], ci_lower, ci_upper, model.best_params_
+
+    # Predict n_days-ahead using the most recent data point
+    latest_features = X.iloc[[-1]]  # latest row for prediction
+    predicted_price = best_model.predict(latest_features)[0]
+
+    # Bootstrap confidence interval on latest prediction
+    boot_preds = []
+    for _ in range(bootstrap_iters):
+        X_resampled, y_resampled = resample(X_train, y_train)
+        rf = RandomForestRegressor(**best_model.get_params())
+        rf.fit(X_resampled, y_resampled)
+        boot_preds.append(rf.predict(latest_features)[0])
+
+    ci_lower = np.percentile(boot_preds, 2.5)
+    ci_upper = np.percentile(boot_preds, 97.5)
+
+    return best_model, rmse, predicted_price, y_test.values[-1], ci_lower, ci_upper, model.best_params_
+
 
 # --------------------------------------
 # Sidebar Inputs
