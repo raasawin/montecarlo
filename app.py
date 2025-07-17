@@ -47,6 +47,18 @@ def monte_carlo_simulation(S0, mu, sigma, T, N, M):
 # --------------------------------------
 # ML Model with tuning and CI
 # --------------------------------------
+st.write("✅ Starting ML Forecast...")
+try:
+    model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(df, n_days)
+    st.write("✅ ML Forecast completed")
+    ...
+except Exception as e:
+    st.error("❌ ML Forecasting Failed")
+    st.exception(e)
+
+
+
+
 def train_random_forest(df, n_days_ahead, bootstrap_iters=1000):
     df = df.copy()
     df['Target'] = df['Close'].shift(-n_days_ahead)
@@ -93,6 +105,14 @@ def train_random_forest(df, n_days_ahead, bootstrap_iters=1000):
 
     return best_model, rmse, predicted_price, y_test.values[-1], ci_lower, ci_upper, model.best_params_
 
+st.write("✅ Starting ML Forecast...")
+try:
+    model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(df, n_days)
+    st.write("✅ ML Forecast completed")
+    ...
+except Exception as e:
+    st.error("❌ ML Forecasting Failed")
+    st.exception(e)
 
 
 # --------------------------------------
