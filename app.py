@@ -82,10 +82,13 @@ def train_random_forest(df, n_days_ahead, use_gridsearch=False, use_bootstrap=Fa
     latest_features = X.iloc[[-1]]
     predicted_price = best_model.predict(latest_features)[0]
 
+    # Bootstrapping with progress bar
     if use_bootstrap:
         st.info(f"🔁 Running Bootstrapping ({bootstrap_iters} iterations)...")
         boot_preds = []
-        progress_bar = st.progress(0, text="🔄 Bootstrapping...")
+
+        progress_text = st.empty()
+        progress_bar = st.progress(0)
 
         for i in range(bootstrap_iters):
             X_resampled, y_resampled = resample(X_train, y_train)
@@ -94,9 +97,13 @@ def train_random_forest(df, n_days_ahead, use_gridsearch=False, use_bootstrap=Fa
             boot_preds.append(rf.predict(latest_features)[0])
 
             if i % 10 == 0 or i == bootstrap_iters - 1:
-                progress_bar.progress((i + 1) / bootstrap_iters, text=f"🔁 Bootstrapping: {i+1}/{bootstrap_iters}")
+                percent_complete = (i + 1) / bootstrap_iters
+                progress_bar.progress(percent_complete)
+                progress_text.markdown(f"**Bootstrapping Progress:** {i+1}/{bootstrap_iters}")
 
         progress_bar.empty()
+        progress_text.empty()
+
         ci_lower = np.percentile(boot_preds, 2.5)
         ci_upper = np.percentile(boot_preds, 97.5)
     else:
@@ -116,7 +123,6 @@ n_days = st.sidebar.slider("Days into the Future", 10, 180, 30, step=10)
 
 use_gridsearch = st.sidebar.checkbox("Use GridSearchCV (slower, better tuning)", value=False)
 use_bootstrap = st.sidebar.checkbox("Use Bootstrapping for Confidence Interval (very slow)", value=False)
-
 bootstrap_iters = st.sidebar.slider("Bootstrapping Iterations", 100, 2000, 1000, step=100) if use_bootstrap else 0
 
 if use_gridsearch and use_bootstrap:
