@@ -45,7 +45,7 @@ def monte_carlo_simulation(S0, mu, sigma, T, N, M):
     return simulations
 
 # --------------------------------------
-# ML Model with optional GridSearchCV and Bootstrapping
+# ML Model with tuning and progress bar
 # --------------------------------------
 def train_random_forest(df, n_days_ahead, use_gridsearch=False, use_bootstrap=False, bootstrap_iters=1000):
     df = df.copy()
@@ -67,6 +67,7 @@ def train_random_forest(df, n_days_ahead, use_gridsearch=False, use_bootstrap=Fa
         grid_search = GridSearchCV(RandomForestRegressor(random_state=0),
                                    param_grid, cv=tscv,
                                    scoring='neg_mean_squared_error', n_jobs=-1)
+        st.info("🔍 Running GridSearchCV (this may take a while)...")
         grid_search.fit(X_train, y_train)
         best_model = grid_search.best_estimator_
         best_params = grid_search.best_params_
@@ -82,13 +83,20 @@ def train_random_forest(df, n_days_ahead, use_gridsearch=False, use_bootstrap=Fa
     predicted_price = best_model.predict(latest_features)[0]
 
     if use_bootstrap:
+        st.info(f"🔁 Running Bootstrapping ({bootstrap_iters} iterations)...")
         boot_preds = []
-        for _ in range(bootstrap_iters):
+        progress_bar = st.progress(0, text="🔄 Bootstrapping...")
+
+        for i in range(bootstrap_iters):
             X_resampled, y_resampled = resample(X_train, y_train)
             rf = RandomForestRegressor(**best_model.get_params())
             rf.fit(X_resampled, y_resampled)
             boot_preds.append(rf.predict(latest_features)[0])
 
+            if i % 10 == 0 or i == bootstrap_iters - 1:
+                progress_bar.progress((i + 1) / bootstrap_iters, text=f"🔁 Bootstrapping: {i+1}/{bootstrap_iters}")
+
+        progress_bar.empty()
         ci_lower = np.percentile(boot_preds, 2.5)
         ci_upper = np.percentile(boot_preds, 97.5)
     else:
@@ -103,23 +111,25 @@ def train_random_forest(df, n_days_ahead, use_gridsearch=False, use_bootstrap=Fa
 st.sidebar.title("Settings")
 ticker = st.sidebar.text_input("Enter Stock Ticker", "AAPL")
 period = st.sidebar.selectbox("Historical Data Period", ["6mo", "1y", "2y", "5y"], index=1)
-n_simulations = st.sidebar.slider("Number of Monte Carlo Simulations", 100, 10000, 500, step=100)
+n_simulations = st.sidebar.slider("Monte Carlo Simulations", 100, 10000, 500, step=100)
 n_days = st.sidebar.slider("Days into the Future", 10, 180, 30, step=10)
 
 use_gridsearch = st.sidebar.checkbox("Use GridSearchCV (slower, better tuning)", value=False)
-use_bootstrap = st.sidebar.checkbox("Use Bootstrapping for Confidence Interval (much slower)", value=False)
+use_bootstrap = st.sidebar.checkbox("Use Bootstrapping for Confidence Interval (very slow)", value=False)
+
+bootstrap_iters = st.sidebar.slider("Bootstrapping Iterations", 100, 2000, 1000, step=100) if use_bootstrap else 0
 
 if use_gridsearch and use_bootstrap:
-    st.sidebar.warning("⚠️ GridSearchCV + Bootstrapping enabled — this may take several minutes to run.")
+    st.sidebar.warning("⚠️ GridSearch + Bootstrapping enabled — expect long wait times.")
 elif use_gridsearch:
-    st.sidebar.info("GridSearchCV enabled — training will take longer but be better tuned.")
+    st.sidebar.info("📊 GridSearchCV will tune model hyperparameters.")
 elif use_bootstrap:
-    st.sidebar.info("Bootstrapping enabled — will produce better confidence intervals but slower.")
+    st.sidebar.info("📈 Bootstrapping will generate 95% CI from resampled models.")
 else:
-    st.sidebar.info("Fast mode: No GridSearchCV or Bootstrapping.")
+    st.sidebar.info("⚡ Fast mode (no GridSearch or Bootstrapping).")
 
 # --------------------------------------
-# Main App
+# Main App Logic
 # --------------------------------------
 st.title(f"📈 Forecasting Stock Price: {ticker.upper()}")
 
@@ -145,17 +155,15 @@ try:
     st.write(f"**Median price**: ${p50:.2f} ({(p50 - latest_close)/latest_close:.2%})")
     st.write(f"**95th percentile price**: ${p95:.2f} ({(p95 - latest_close)/latest_close:.2%})")
 
-    # ML Forecast
+    # Machine Learning Forecast
     st.write("🔍 Running ML Forecast...")
     try:
-        st.write("✅ Step 1: Starting training...")
         model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(
             df, n_days,
             use_gridsearch=use_gridsearch,
             use_bootstrap=use_bootstrap,
-            bootstrap_iters=1000 if use_bootstrap else 0
+            bootstrap_iters=bootstrap_iters
         )
-        st.write("✅ Step 2: Training complete.")
 
         ml_change_pct = (predicted_price - latest_close) / latest_close * 100
 
@@ -167,15 +175,14 @@ try:
         st.write(f"**Expected Price Change**: {ml_change_pct:+.2f}%")
         st.write(f"**Best Model Parameters**: `{best_params}`")
 
-        # Final verdict summary
         st.markdown("---")
         st.subheader("📊 Final Summary")
         if ml_change_pct > 1 and p50 > latest_close:
-            st.success(f"**Likely Upward Trend** — Expected increase of ~{ml_change_pct:.2f}% (ML) and {(p50 - latest_close)/latest_close:.2%} (MC).")
+            st.success(f"**Likely Upward Trend** — ML: ~{ml_change_pct:.2f}%, MC: {(p50 - latest_close)/latest_close:.2%}")
         elif ml_change_pct < -1 and p50 < latest_close:
-            st.error(f"**Likely Downward Trend** — Expected drop of ~{ml_change_pct:.2f}% (ML) and {(p50 - latest_close)/latest_close:.2%} (MC).")
+            st.error(f"**Likely Downward Trend** — ML: ~{ml_change_pct:.2f}%, MC: {(p50 - latest_close)/latest_close:.2%}")
         else:
-            st.warning("**Uncertain** — Predictions show mixed or flat direction. Exercise caution.")
+            st.warning("**Uncertain** — Mixed or flat predictions. Use caution.")
 
     except Exception as e:
         st.error(f"Error during ML training: {e}")
