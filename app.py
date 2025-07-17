@@ -47,6 +47,10 @@ def monte_carlo_simulation(S0, mu, sigma, T, N, M):
 # --------------------------------------
 # ML Model with tuning and CI
 # --------------------------------------
+model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(df, n_days)
+
+
+
 st.write("✅ Starting ML Forecast...")
 try:
     model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(df, n_days)
