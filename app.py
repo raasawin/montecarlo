@@ -45,9 +45,9 @@ def monte_carlo_simulation(S0, mu, sigma, T, N, M):
     return simulations
 
 # --------------------------------------
-# ML Model (lightweight version for speed)
+# ML Model with optional GridSearchCV and Bootstrapping
 # --------------------------------------
-def train_random_forest(df, n_days_ahead):
+def train_random_forest(df, n_days_ahead, use_gridsearch=False, use_bootstrap=False, bootstrap_iters=1000):
     df = df.copy()
     df['Target'] = df['Close'].shift(-n_days_ahead)
     df = df.dropna()
@@ -56,26 +56,46 @@ def train_random_forest(df, n_days_ahead):
     X = df[features]
     y = df['Target']
 
-    # Train/test split without shuffle (time series)
     X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
 
-    # Simple RF with fixed hyperparams (no GridSearch for speed)
-    rf = RandomForestRegressor(n_estimators=100, random_state=0)
-    rf.fit(X_train, y_train)
+    if use_gridsearch:
+        param_grid = {
+            'n_estimators': [100, 200],
+            'max_depth': [None, 5, 10]
+        }
+        tscv = TimeSeriesSplit(n_splits=5)
+        grid_search = GridSearchCV(RandomForestRegressor(random_state=0),
+                                   param_grid, cv=tscv,
+                                   scoring='neg_mean_squared_error', n_jobs=-1)
+        grid_search.fit(X_train, y_train)
+        best_model = grid_search.best_estimator_
+        best_params = grid_search.best_params_
+    else:
+        best_model = RandomForestRegressor(n_estimators=100, random_state=0)
+        best_model.fit(X_train, y_train)
+        best_params = {'n_estimators': 100}
 
-    y_pred = rf.predict(X_test)
+    y_pred = best_model.predict(X_test)
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
 
     latest_features = X.iloc[[-1]]
-    predicted_price = rf.predict(latest_features)[0]
+    predicted_price = best_model.predict(latest_features)[0]
 
-    # Simple CI approximation ±2%
-    ci_lower = predicted_price * 0.98
-    ci_upper = predicted_price * 1.02
+    if use_bootstrap:
+        boot_preds = []
+        for _ in range(bootstrap_iters):
+            X_resampled, y_resampled = resample(X_train, y_train)
+            rf = RandomForestRegressor(**best_model.get_params())
+            rf.fit(X_resampled, y_resampled)
+            boot_preds.append(rf.predict(latest_features)[0])
 
-    best_params = {'n_estimators': 100}
+        ci_lower = np.percentile(boot_preds, 2.5)
+        ci_upper = np.percentile(boot_preds, 97.5)
+    else:
+        ci_lower = predicted_price * 0.98
+        ci_upper = predicted_price * 1.02
 
-    return rf, rmse, predicted_price, y_test.values[-1], ci_lower, ci_upper, best_params
+    return best_model, rmse, predicted_price, y_test.values[-1], ci_lower, ci_upper, best_params
 
 # --------------------------------------
 # Sidebar Inputs
@@ -85,6 +105,18 @@ ticker = st.sidebar.text_input("Enter Stock Ticker", "AAPL")
 period = st.sidebar.selectbox("Historical Data Period", ["6mo", "1y", "2y", "5y"], index=1)
 n_simulations = st.sidebar.slider("Number of Monte Carlo Simulations", 100, 10000, 500, step=100)
 n_days = st.sidebar.slider("Days into the Future", 10, 180, 30, step=10)
+
+use_gridsearch = st.sidebar.checkbox("Use GridSearchCV (slower, better tuning)", value=False)
+use_bootstrap = st.sidebar.checkbox("Use Bootstrapping for Confidence Interval (much slower)", value=False)
+
+if use_gridsearch and use_bootstrap:
+    st.sidebar.warning("⚠️ GridSearchCV + Bootstrapping enabled — this may take several minutes to run.")
+elif use_gridsearch:
+    st.sidebar.info("GridSearchCV enabled — training will take longer but be better tuned.")
+elif use_bootstrap:
+    st.sidebar.info("Bootstrapping enabled — will produce better confidence intervals but slower.")
+else:
+    st.sidebar.info("Fast mode: No GridSearchCV or Bootstrapping.")
 
 # --------------------------------------
 # Main App
@@ -117,7 +149,12 @@ try:
     st.write("🔍 Running ML Forecast...")
     try:
         st.write("✅ Step 1: Starting training...")
-        model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(df, n_days)
+        model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(
+            df, n_days,
+            use_gridsearch=use_gridsearch,
+            use_bootstrap=use_bootstrap,
+            bootstrap_iters=1000 if use_bootstrap else 0
+        )
         st.write("✅ Step 2: Training complete.")
 
         ml_change_pct = (predicted_price - latest_close) / latest_close * 100
