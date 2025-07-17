@@ -131,8 +131,18 @@ try:
     # Fetch EPS forecast and add as feature
     eps_forecast = get_eps_forecast(ticker)
     st.sidebar.write(f"EPS Forecast (next quarter): {eps_forecast if not np.isnan(eps_forecast) else 'N/A'}")
+
+    if np.isnan(eps_forecast):
+        # Fallback to median close price if EPS forecast missing
+        eps_forecast = np.median(df['Close'])
+
     df['EPS_Forecast'] = eps_forecast
+
     df.dropna(inplace=True)
+
+    if df.shape[0] < 50:
+        st.error("Not enough data available after processing to train the ML model.")
+        st.stop()
 
     latest_close = df['Close'].iloc[-1]
     log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
