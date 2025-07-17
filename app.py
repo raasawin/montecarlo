@@ -20,16 +20,30 @@ def get_stock_data(ticker_symbol, period="1y"):
     return data
 
 # --------------------------------------
-# Fetch EPS forecast from yfinance calendar
+# Fetch EPS forecast from yfinance calendar or earnings_trend
 # --------------------------------------
 def get_eps_forecast(ticker_symbol):
     ticker = yf.Ticker(ticker_symbol)
+    
+    # Try calendar first
+    cal = ticker.calendar
+    if not cal.empty:
+        try:
+            cal_t = cal.T
+            if 'Earnings Estimate' in cal_t.index:
+                return float(cal_t.loc['Earnings Estimate'].values[0])
+        except Exception:
+            pass
+    
+    # Try earnings_trend
     try:
-        cal = ticker.calendar.T  # transpose for easier access
-        eps_estimate = float(cal.loc['Earnings Estimate'].values[0])
-        return eps_estimate
+        et = ticker.earnings_trend
+        if et is not None and not et.empty:
+            return float(et['EPS Estimate'].iloc[0])
     except Exception:
-        return np.nan
+        pass
+    
+    return np.nan
 
 # --------------------------------------
 # Technical indicators
@@ -118,6 +132,14 @@ n_days = st.sidebar.slider("Days into the Future", 10, 180, 30, step=10)
 use_gridsearch = st.sidebar.checkbox("Use GridSearchCV (slower, better tuning)", value=False)
 use_bootstrap = st.sidebar.checkbox("Use Bootstrapping (slower, CI estimate)", value=False)
 
+# Manual EPS input with validation
+eps_manual_input = st.sidebar.text_input("Enter EPS Forecast Manually (optional)", "")
+try:
+    eps_manual = float(eps_manual_input) if eps_manual_input.strip() != "" else np.nan
+except ValueError:
+    st.sidebar.error("Invalid EPS value entered. Please enter a valid number.")
+    eps_manual = np.nan
+
 # --------------------------------------
 # Main App
 # --------------------------------------
@@ -128,6 +150,11 @@ try:
     df = add_technical_indicators(df)
 
     eps_forecast = get_eps_forecast(ticker)
+
+    # Override with manual EPS if provided
+    if not np.isnan(eps_manual):
+        eps_forecast = eps_manual
+
     if not np.isnan(eps_forecast):
         st.sidebar.write(f"EPS Forecast (next quarter): {eps_forecast}")
         df['EPS_Forecast'] = eps_forecast
