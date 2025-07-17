@@ -10,7 +10,7 @@ from sklearn.utils import resample
 st.set_page_config(layout="wide", page_title="Stock Price Forecast (MC + ML)")
 
 # --------------------------------------
-# Fetch stock data (Fixed cache handling)
+# Fetch stock data (Cached)
 # --------------------------------------
 @st.cache_data(ttl=3600)
 def get_stock_data(ticker_symbol, period="1y"):
@@ -45,38 +45,26 @@ def monte_carlo_simulation(S0, mu, sigma, T, N, M):
     return simulations
 
 # --------------------------------------
-# ML Model with tuning and CI
-# --------------------------------------
-model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(df, n_days)
-
-# --------------------------------------
 # ML Model with tuning and Confidence Interval
 # --------------------------------------
 def train_random_forest(df, n_days_ahead, bootstrap_iters=100):
     df = df.copy()
 
-    # Create target n days ahead
     df['Target'] = df['Close'].shift(-n_days_ahead)
-
-    # Drop rows with NaNs created by indicators or shifting
     df = df.dropna()
 
-    # Check data sufficiency
     if len(df) < 60:
         raise ValueError(f"Too little data after dropna for ML model: only {len(df)} rows. Try a longer period or reduce forecast days.")
 
-    # Features to train on
     features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change']
     X = df[features]
     y = df['Target']
 
-    # Time-aware train/test split
     X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
 
     if len(X_test) == 0:
         raise ValueError("Empty test set after split. Adjust date range or reduce forecast horizon.")
 
-    # Grid search with adaptive splits
     min_splits = 3
     max_possible_splits = len(X_train) // 10
     cv_splits = min(max(min_splits, max_possible_splits), 5)
@@ -94,11 +82,9 @@ def train_random_forest(df, n_days_ahead, bootstrap_iters=100):
     y_pred = best_model.predict(X_test)
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
 
-    # Predict using latest row
     latest_features = X.iloc[[-1]]
     predicted_price = best_model.predict(latest_features)[0]
 
-    # Bootstrap for confidence intervals
     boot_preds = []
     for _ in range(bootstrap_iters):
         X_resampled, y_resampled = resample(X_train, y_train)
@@ -111,21 +97,20 @@ def train_random_forest(df, n_days_ahead, bootstrap_iters=100):
 
     return best_model, rmse, predicted_price, y_test.values[-1], ci_lower, ci_upper, model.best_params_
 
-
-
 # --------------------------------------
 # Sidebar Inputs
 # --------------------------------------
 st.sidebar.title("Settings")
 ticker = st.sidebar.text_input("Enter Stock Ticker", "AAPL")
 period = st.sidebar.selectbox("Historical Data Period", ["6mo", "1y", "2y", "5y"], index=1)
-n_simulations = st.sidebar.slider("Number of Monte Carlo Simulations", 100, 10000, 500, step=100)
+n_simulations = st.sidebar.slider("Monte Carlo Simulations", 100, 10000, 500, step=100)
 n_days = st.sidebar.slider("Days into the Future", 10, 180, 30, step=10)
 
 # --------------------------------------
 # Main App
 # --------------------------------------
 st.title(f"📈 Forecasting Stock Price: {ticker.upper()}")
+
 try:
     df = get_stock_data(ticker, period)
     df = add_technical_indicators(df)
@@ -134,10 +119,11 @@ try:
     log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
     mu, sigma = log_returns.mean(), log_returns.std()
 
-    # Run Monte Carlo
+    # --------------------------------------
+    # Monte Carlo Simulation
+    # --------------------------------------
     sim_data = monte_carlo_simulation(S0=latest_close, mu=mu, sigma=sigma,
                                       T=n_days, N=n_days, M=n_simulations)
-
     final_prices = sim_data[-1, :]
     p5 = np.percentile(final_prices, 5)
     p50 = np.percentile(final_prices, 50)
@@ -148,28 +134,36 @@ try:
     st.write(f"**Median price**: ${p50:.2f} ({(p50 - latest_close)/latest_close:.2%})")
     st.write(f"**95th percentile price**: ${p95:.2f} ({(p95 - latest_close)/latest_close:.2%})")
 
-    # Run ML model
-    model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(df, n_days)
-    ml_change_pct = (predicted_price - latest_close) / latest_close * 100
+    # --------------------------------------
+    # Machine Learning Forecast
+    # --------------------------------------
+    st.write("🔍 Running ML Forecast...")
+    try:
+        model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(df, n_days)
+        ml_change_pct = (predicted_price - latest_close) / latest_close * 100
 
-    st.subheader(f"Machine Learning Prediction ({n_days}-Day Close)")
-    st.write(f"**Predicted Price**: ${predicted_price:.2f}")
-    st.write(f"**95% Prediction Interval**: ${ci_lower:.2f} to ${ci_upper:.2f}")
-    st.write(f"**Actual Price (last test sample)**: ${actual_price:.2f}")
-    st.write(f"**RMSE**: ${rmse:.2f}")
-    st.write(f"**Expected Price Change**: {ml_change_pct:+.2f}%")
-    st.write(f"**Best Model Parameters**: `{best_params}`")
+        st.subheader(f"Machine Learning Prediction ({n_days}-Day Close)")
+        st.write(f"**Predicted Price**: ${predicted_price:.2f}")
+        st.write(f"**95% Prediction Interval**: ${ci_lower:.2f} to ${ci_upper:.2f}")
+        st.write(f"**Actual Price (last test sample)**: ${actual_price:.2f}")
+        st.write(f"**RMSE**: ${rmse:.2f}")
+        st.write(f"**Expected Price Change**: {ml_change_pct:+.2f}%")
+        st.write(f"**Best Model Parameters**: `{best_params}`")
 
-    # Summary
-    st.markdown("---")
-    st.subheader("📊 Final Summary")
-    if ml_change_pct > 1 and p50 > latest_close:
-        st.success(f"**Likely Upward Trend** — Expected increase of ~{ml_change_pct:.2f}% (ML) and {(p50 - latest_close)/latest_close:.2%} (MC).")
-    elif ml_change_pct < -1 and p50 < latest_close:
-        st.error(f"**Likely Downward Trend** — Expected drop of ~{ml_change_pct:.2f}% (ML) and {(p50 - latest_close)/latest_close:.2%} (MC).")
-    else:
-        st.warning("**Uncertain** — Predictions show mixed or flat direction. Exercise caution.")
+        # Final Summary Verdict
+        st.markdown("---")
+        st.subheader("📊 Final Summary")
+        if ml_change_pct > 1 and p50 > latest_close:
+            st.success(f"**Likely Upward Trend** — Expected increase of ~{ml_change_pct:.2f}% (ML) and {(p50 - latest_close)/latest_close:.2%} (MC).")
+        elif ml_change_pct < -1 and p50 < latest_close:
+            st.error(f"**Likely Downward Trend** — Expected drop of ~{ml_change_pct:.2f}% (ML) and {(p50 - latest_close)/latest_close:.2%} (MC).")
+        else:
+            st.warning("**Uncertain** — Predictions show mixed or flat direction. Exercise caution.")
+
+    except Exception as e:
+        st.error("❌ ML Forecasting Failed:")
+        st.exception(e)
 
 except Exception as e:
-    st.error(f"Error loading data: {e}")
-
+    st.error("❌ Error loading stock data or running analysis:")
+    st.exception(e)
