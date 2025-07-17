@@ -13,31 +13,31 @@ st.set_page_config(layout="wide", page_title="Stock Price Forecast (MC + ML)")
 # Fetch stock data (Fixed cache handling)
 # --------------------------------------
 @st.cache_data(ttl=3600)
-def get_stock_data(ticker_symbol, period="1y"):
+def get_stock_data(ticker_symbol, period="2y"):
     ticker = yf.Ticker(ticker_symbol)
     data = ticker.history(period=period)
     data.dropna(inplace=True)
     return data
 
 # --------------------------------------
-# Fetch EPS forecast from yfinance calendar or earnings_trend
+# Fetch EPS forecast
 # --------------------------------------
 def get_eps_forecast(ticker_symbol):
     ticker = yf.Ticker(ticker_symbol)
     
-    cal = ticker.calendar
-    if isinstance(cal, pd.DataFrame) and not cal.empty:
-        try:
-            cal_t = cal.T
-            if 'Earnings Estimate' in cal_t.index:
-                return float(cal_t.loc['Earnings Estimate'].values[0])
-        except Exception:
-            pass
-    
+    try:
+        cal = ticker.calendar
+        if isinstance(cal, pd.DataFrame) and not cal.empty:
+            eps_val = cal.loc['Earnings Estimate'].values[0]
+            if pd.notnull(eps_val):
+                return float(eps_val)
+    except Exception:
+        pass
+
     try:
         et = ticker.earnings_trend
-        if isinstance(et, pd.DataFrame) and not et.empty:
-            return float(et['EPS Estimate'].iloc[0])
+        if isinstance(et, pd.DataFrame) and 'EPS Estimate' in et.columns:
+            return float(et['EPS Estimate'].dropna().iloc[0])
     except Exception:
         pass
     
@@ -51,7 +51,8 @@ def add_technical_indicators(df):
     df['Momentum'] = df['Close'].diff(4)
     df['Volatility'] = df['Close'].rolling(window=20).std()
     df['Volume_Change'] = df['Volume'].pct_change()
-    return df.dropna()
+    df.dropna(inplace=True)
+    return df
 
 # --------------------------------------
 # Monte Carlo Simulation
@@ -77,14 +78,10 @@ def train_random_forest(df, n_days_ahead, features, bootstrap_iters=1000, use_gr
     X = df[features]
     y = df['Target']
 
-    # Split historical data for RMSE
     X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
 
     if use_gridsearch:
-        param_grid = {
-            'n_estimators': [100, 200],
-            'max_depth': [None, 5, 10]
-        }
+        param_grid = {'n_estimators': [100, 200], 'max_depth': [None, 5, 10]}
         tscv = TimeSeriesSplit(n_splits=5)
         model = GridSearchCV(RandomForestRegressor(random_state=0), param_grid, cv=tscv, scoring='neg_mean_squared_error')
         model.fit(X_train, y_train)
@@ -98,39 +95,37 @@ def train_random_forest(df, n_days_ahead, features, bootstrap_iters=1000, use_gr
     y_pred = best_model.predict(X_test)
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
 
-    # Predict n_days-ahead using the most recent data point
     latest_features = X.iloc[[-1]]
     predicted_price = best_model.predict(latest_features)[0]
 
     ci_lower, ci_upper = None, None
     if use_bootstrap and progress_bar:
         boot_preds = []
+        update_step = max(1, bootstrap_iters // 50)
         for i in range(bootstrap_iters):
             X_resampled, y_resampled = resample(X_train, y_train)
             rf = RandomForestRegressor(**best_model.get_params())
             rf.fit(X_resampled, y_resampled)
             boot_preds.append(rf.predict(latest_features)[0])
-            if i % max(1, bootstrap_iters // 100) == 0:
-                progress_bar.progress(min(i / bootstrap_iters, 1.0))
+            if i % update_step == 0:
+                progress_bar.progress(i / bootstrap_iters)
 
         ci_lower = np.percentile(boot_preds, 2.5)
         ci_upper = np.percentile(boot_preds, 97.5)
 
     return best_model, rmse, predicted_price, y_test.values[-1], ci_lower, ci_upper, best_params
 
-
 # --------------------------------------
 # Sidebar Inputs
 # --------------------------------------
 st.sidebar.title("Settings")
 ticker = st.sidebar.text_input("Enter Stock Ticker", "AAPL")
-period = st.sidebar.selectbox("Historical Data Period", ["6mo", "1y", "2y", "5y"], index=1)
+period = st.sidebar.selectbox("Historical Data Period", ["6mo", "1y", "2y", "5y"], index=2)
 n_simulations = st.sidebar.slider("Number of Monte Carlo Simulations", 100, 10000, 500, step=100)
 n_days = st.sidebar.slider("Days into the Future", 10, 180, 30, step=10)
 use_gridsearch = st.sidebar.checkbox("Use GridSearchCV (slower, better tuning)", value=False)
 use_bootstrap = st.sidebar.checkbox("Use Bootstrapping (slower, CI estimate)", value=False)
 
-# Manual EPS input with validation
 eps_manual_input = st.sidebar.text_input("Enter EPS Forecast Manually (optional)", "")
 try:
     eps_manual = float(eps_manual_input) if eps_manual_input.strip() != "" else np.nan
@@ -147,9 +142,9 @@ try:
     df = get_stock_data(ticker, period)
     df = add_technical_indicators(df)
 
-    eps_forecast = get_eps_forecast(ticker)
+    st.sidebar.write(f"📊 Usable data points: {df.shape[0]}")
 
-    # Override with manual EPS if provided
+    eps_forecast = get_eps_forecast(ticker)
     if not np.isnan(eps_manual):
         eps_forecast = eps_manual
 
@@ -163,15 +158,13 @@ try:
 
     df.dropna(inplace=True)
 
-    if df.shape[0] < 30:
-        st.error("Not enough data available after processing to train the ML model.")
-        st.stop()
-
+    if df.shape[0] < 20:
+        st.warning("⚠️ Warning: Limited data after preprocessing. Forecast may be unreliable.")
+    
     latest_close = df['Close'].iloc[-1]
     log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
     mu, sigma = log_returns.mean(), log_returns.std()
 
-    # Run Monte Carlo
     sim_data = monte_carlo_simulation(S0=latest_close, mu=mu, sigma=sigma,
                                       T=n_days, N=n_days, M=n_simulations)
 
@@ -187,7 +180,6 @@ try:
 
     progress_bar = st.progress(0)
 
-    # Run ML model
     model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(
         df, n_days, features, bootstrap_iters=1000,
         use_gridsearch=use_gridsearch, use_bootstrap=use_bootstrap, progress_bar=progress_bar)
