@@ -138,9 +138,20 @@ try:
     # Machine Learning Forecast
     # --------------------------------------
     st.write("🔍 Running ML Forecast...")
-    try:
-        model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(df, n_days)
-        ml_change_pct = (predicted_price - latest_close) / latest_close * 100
+
+try:
+    st.write("✅ Step 1: Starting training...")
+    model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(df, n_days)
+    st.write("✅ Step 2: Training complete.")
+
+    ml_change_pct = (predicted_price - df['Close'].iloc[-1]) / df['Close'].iloc[-1] * 100
+
+    st.subheader(f"Machine Learning Prediction ({n_days}-Day Close)")
+    st.write(f"**Predicted Price**: ${predicted_price:.2f}")
+    st.write(f"**95% Prediction Interval**: ${ci_lower:.2f} to ${ci_upper:.2f}")
+    st.write(f"**Actual Price (last test sample)**: ${actual_price:.2f}")
+    st.write(f"**RMS**
+
 
         st.subheader(f"Machine Learning Prediction ({n_days}-Day Close)")
         st.write(f"**Predicted Price**: ${predicted_price:.2f}")
