@@ -25,9 +25,8 @@ def get_stock_data(ticker_symbol, period="1y"):
 def get_eps_forecast(ticker_symbol):
     ticker = yf.Ticker(ticker_symbol)
     
-    # Try calendar first
     cal = ticker.calendar
-    if not cal.empty:
+    if isinstance(cal, pd.DataFrame) and not cal.empty:
         try:
             cal_t = cal.T
             if 'Earnings Estimate' in cal_t.index:
@@ -35,10 +34,9 @@ def get_eps_forecast(ticker_symbol):
         except Exception:
             pass
     
-    # Try earnings_trend
     try:
         et = ticker.earnings_trend
-        if et is not None and not et.empty:
+        if isinstance(et, pd.DataFrame) and not et.empty:
             return float(et['EPS Estimate'].iloc[0])
     except Exception:
         pass
