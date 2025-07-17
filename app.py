@@ -59,9 +59,8 @@ def monte_carlo_simulation(S0, mu, sigma, T, N, M):
 # --------------------------------------
 # ML Model with tuning and CI
 # --------------------------------------
-def train_random_forest(df, n_days_ahead, bootstrap_iters=1000, use_gridsearch=False, use_bootstrap=False, progress_bar=None):
+def train_random_forest(df, n_days_ahead, features, bootstrap_iters=1000, use_gridsearch=False, use_bootstrap=False, progress_bar=None):
     df['Target'] = df['Close'].shift(-n_days_ahead)
-    features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS_Forecast']
     df = df.dropna()
     X = df[features]
     y = df['Target']
@@ -128,19 +127,18 @@ try:
     df = get_stock_data(ticker, period)
     df = add_technical_indicators(df)
 
-    # Fetch EPS forecast and add as feature
     eps_forecast = get_eps_forecast(ticker)
-    st.sidebar.write(f"EPS Forecast (next quarter): {eps_forecast if not np.isnan(eps_forecast) else 'N/A'}")
-
-    if np.isnan(eps_forecast):
-        # Fallback to median close price if EPS forecast missing
-        eps_forecast = np.median(df['Close'])
-
-    df['EPS_Forecast'] = eps_forecast
+    if not np.isnan(eps_forecast):
+        st.sidebar.write(f"EPS Forecast (next quarter): {eps_forecast}")
+        df['EPS_Forecast'] = eps_forecast
+        features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS_Forecast']
+    else:
+        st.sidebar.write("EPS Forecast not available.")
+        features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change']
 
     df.dropna(inplace=True)
 
-    if df.shape[0] < 50:
+    if df.shape[0] < 30:
         st.error("Not enough data available after processing to train the ML model.")
         st.stop()
 
@@ -162,12 +160,12 @@ try:
     st.write(f"**Median price**: ${p50:.2f} ({(p50 - latest_close)/latest_close:.2%})")
     st.write(f"**95th percentile price**: ${p95:.2f} ({(p95 - latest_close)/latest_close:.2%})")
 
-    # Progress bar for ML forecast (especially bootstrapping)
     progress_bar = st.progress(0)
 
     # Run ML model
     model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(
-        df, n_days, bootstrap_iters=1000, use_gridsearch=use_gridsearch, use_bootstrap=use_bootstrap, progress_bar=progress_bar)
+        df, n_days, features, bootstrap_iters=1000,
+        use_gridsearch=use_gridsearch, use_bootstrap=use_bootstrap, progress_bar=progress_bar)
 
     ml_change_pct = (predicted_price - latest_close) / latest_close * 100
 
@@ -180,7 +178,6 @@ try:
     st.write(f"**Expected Price Change**: {ml_change_pct:+.2f}%")
     st.write(f"**Best Model Parameters**: `{best_params}`")
 
-    # Summary
     st.markdown("---")
     st.subheader("📊 Final Summary")
     if ml_change_pct > 1 and p50 > latest_close:
