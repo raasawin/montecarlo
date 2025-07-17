@@ -49,44 +49,44 @@ def monte_carlo_simulation(S0, mu, sigma, T, N, M):
 # --------------------------------------
 model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(df, n_days)
 
-
-
-st.write("✅ Starting ML Forecast...")
-try:
-    model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(df, n_days)
-    st.write("✅ ML Forecast completed")
-    ...
-except Exception as e:
-    st.error("❌ ML Forecasting Failed")
-    st.exception(e)
-
-
-
-
-def train_random_forest(df, n_days_ahead, bootstrap_iters=1000):
+# --------------------------------------
+# ML Model with tuning and Confidence Interval
+# --------------------------------------
+def train_random_forest(df, n_days_ahead, bootstrap_iters=100):
     df = df.copy()
+
+    # Create target n days ahead
     df['Target'] = df['Close'].shift(-n_days_ahead)
+
+    # Drop rows with NaNs created by indicators or shifting
     df = df.dropna()
 
-    features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change']
-    
-    if len(df) < 50:
-        raise ValueError(f"Too little data ({len(df)} rows) after shifting for prediction. Try a longer historical period or fewer forecast days.")
+    # Check data sufficiency
+    if len(df) < 60:
+        raise ValueError(f"Too little data after dropna for ML model: only {len(df)} rows. Try a longer period or reduce forecast days.")
 
+    # Features to train on
+    features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change']
     X = df[features]
     y = df['Target']
 
-    # TimeSeries split
+    # Time-aware train/test split
     X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
-    
+
     if len(X_test) == 0:
-        raise ValueError("Test set is empty. Adjust your time range or forecast horizon.")
+        raise ValueError("Empty test set after split. Adjust date range or reduce forecast horizon.")
+
+    # Grid search with adaptive splits
+    min_splits = 3
+    max_possible_splits = len(X_train) // 10
+    cv_splits = min(max(min_splits, max_possible_splits), 5)
 
     param_grid = {
         'n_estimators': [100, 200],
         'max_depth': [None, 5, 10]
     }
-    tscv = TimeSeriesSplit(n_splits=5)
+
+    tscv = TimeSeriesSplit(n_splits=cv_splits)
     model = GridSearchCV(RandomForestRegressor(random_state=0), param_grid, cv=tscv, scoring='neg_mean_squared_error')
     model.fit(X_train, y_train)
 
@@ -94,9 +94,11 @@ def train_random_forest(df, n_days_ahead, bootstrap_iters=1000):
     y_pred = best_model.predict(X_test)
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
 
+    # Predict using latest row
     latest_features = X.iloc[[-1]]
     predicted_price = best_model.predict(latest_features)[0]
 
+    # Bootstrap for confidence intervals
     boot_preds = []
     for _ in range(bootstrap_iters):
         X_resampled, y_resampled = resample(X_train, y_train)
@@ -109,14 +111,6 @@ def train_random_forest(df, n_days_ahead, bootstrap_iters=1000):
 
     return best_model, rmse, predicted_price, y_test.values[-1], ci_lower, ci_upper, model.best_params_
 
-st.write("✅ Starting ML Forecast...")
-try:
-    model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(df, n_days)
-    st.write("✅ ML Forecast completed")
-    ...
-except Exception as e:
-    st.error("❌ ML Forecasting Failed")
-    st.exception(e)
 
 
 # --------------------------------------
