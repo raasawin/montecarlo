@@ -185,3 +185,68 @@ try:
 
 except Exception as e:
     st.error(f"Error loading data or running simulation: {e}")
+
+
+# --------------------------------------
+# Market Scanner Section
+# --------------------------------------
+st.sidebar.markdown("---")
+st.sidebar.subheader("📡 Market Scanner")
+
+run_scan = st.sidebar.button("🔍 Scan Market")
+
+if run_scan:
+    st.subheader("📊 Scanning Selected Market Tickers...")
+
+    tickers_to_scan = ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'TSLA', 'META', 'AMD', 'CRM', 'NFLX']
+    scan_results = []
+
+    scan_progress = st.progress(0)
+    for i, scan_ticker in enumerate(tickers_to_scan):
+        try:
+            df_scan = get_stock_data(scan_ticker, period)
+            df_scan = add_technical_indicators(df_scan)
+            df_scan.dropna(inplace=True)
+
+            latest_close = df_scan['Close'].iloc[-1]
+            log_returns = np.log(df_scan['Close'] / df_scan['Close'].shift(1)).dropna()
+            mu, sigma = log_returns.mean(), log_returns.std()
+
+            # Use default EPS (or pull from a source later)
+            eps_value = 5.0
+            df_scan['EPS'] = eps_value
+
+            # ML model
+            predicted_price, rmse, actual = train_random_forest(df_scan.copy(), n_days, eps_value)
+            ml_change_pct = (predicted_price - latest_close) / latest_close * 100
+
+            # Monte Carlo
+            pe_ratio = latest_close / eps_value
+            adjusted_mu = mu * (20.0 / pe_ratio) if pe_ratio > 0 else mu
+            mc_sim = monte_carlo_simulation(S0=latest_close, mu=adjusted_mu, sigma=sigma,
+                                            T=n_days, N=n_days, M=300)
+            mc_median = np.percentile(mc_sim[-1, :], 50)
+            mc_change_pct = (mc_median - latest_close) / latest_close * 100
+
+            scan_results.append({
+                'Ticker': scan_ticker,
+                'Current Price': latest_close,
+                'ML Prediction': predicted_price,
+                'ML % Change': ml_change_pct,
+                'MC Median': mc_median,
+                'MC % Change': mc_change_pct,
+                'RMSE': rmse
+            })
+
+        except Exception as e:
+            st.warning(f"Skipping {scan_ticker}: {e}")
+
+        scan_progress.progress((i + 1) / len(tickers_to_scan))
+
+    if scan_results:
+        results_df = pd.DataFrame(scan_results)
+        results_df.sort_values("ML % Change", ascending=False, inplace=True)
+        st.success(f"Scan complete. Top {min(10, len(results_df))} results shown below:")
+        st.dataframe(results_df.head(10))
+    else:
+        st.error("No valid results from scan.")
