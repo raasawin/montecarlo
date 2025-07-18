@@ -47,11 +47,12 @@ def monte_carlo_simulation(S0, mu, sigma, T, N, M):
 # --------------------------------------
 # ML Model
 # --------------------------------------
-def train_random_forest(df, n_days_ahead, bootstrap_iters=1000, use_gridsearch=False, use_bootstrap=False, progress_bar=None):
+def train_random_forest(df, n_days_ahead, eps, bootstrap_iters=1000, use_gridsearch=False, use_bootstrap=False, progress_bar=None):
+    df['EPS'] = eps  # Add EPS as a constant feature
     df['Target'] = df['Close'].shift(-n_days_ahead)
     df = df.dropna()
 
-    features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change']
+    features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS']
     X = df[features]
     y = df['Target']
 
@@ -114,6 +115,9 @@ manual_price = None
 if use_manual_price:
     manual_price = st.sidebar.number_input("Enter Latest Close Price", min_value=0.0, value=150.0, step=0.1)
 
+# NEW EPS input added here
+eps = st.sidebar.number_input("Enter EPS (Earnings Per Share)", min_value=0.01, value=5.0, step=0.01)
+
 # --------------------------------------
 # Main App Logic
 # --------------------------------------
@@ -123,7 +127,7 @@ try:
     df = get_stock_data(ticker, period)
     df = add_technical_indicators(df)
 
-    if use_manual_price and manual_price:
+    if use_manual_price and manual_price is not None:
         df.iloc[-1, df.columns.get_loc("Close")] = manual_price
         df = add_technical_indicators(df)  # Recalculate indicators after price change
 
@@ -133,7 +137,12 @@ try:
     log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
     mu, sigma = log_returns.mean(), log_returns.std()
 
-    sim_data = monte_carlo_simulation(S0=latest_close, mu=mu, sigma=sigma, T=n_days, N=n_days, M=n_simulations)
+    # Calculate P/E ratio and adjust mu for Monte Carlo drift
+    pe_ratio = latest_close / eps if eps > 0 else np.nan
+    baseline_pe = 20.0
+    adjusted_mu = mu * (baseline_pe / pe_ratio) if pe_ratio > 0 else mu
+
+    sim_data = monte_carlo_simulation(S0=latest_close, mu=adjusted_mu, sigma=sigma, T=n_days, N=n_days, M=n_simulations)
     final_prices = sim_data[-1, :]
     p5 = np.percentile(final_prices, 5)
     p50 = np.percentile(final_prices, 50)
@@ -147,7 +156,7 @@ try:
     progress_bar = st.progress(0)
 
     model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(
-        df, n_days,
+        df, n_days, eps,
         bootstrap_iters=1000,
         use_gridsearch=use_gridsearch,
         use_bootstrap=use_bootstrap,
