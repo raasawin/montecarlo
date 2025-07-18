@@ -188,6 +188,7 @@ except Exception as e:
 
 
 # --------------------------------------
+# --------------------------------------
 # Market Scanner Section
 # --------------------------------------
 st.sidebar.markdown("---")
@@ -202,6 +203,7 @@ if run_scan:
     scan_results = []
 
     scan_progress = st.progress(0)
+
     for i, scan_ticker in enumerate(tickers_to_scan):
         try:
             df_scan = get_stock_data(scan_ticker, period)
@@ -212,15 +214,16 @@ if run_scan:
             log_returns = np.log(df_scan['Close'] / df_scan['Close'].shift(1)).dropna()
             mu, sigma = log_returns.mean(), log_returns.std()
 
-            # Use default EPS (or pull from a source later)
+            # Use default EPS (or fetch from API later)
             eps_value = 5.0
             df_scan['EPS'] = eps_value
 
-            # ML model
-            predicted_price, rmse, actual = train_random_forest(df_scan.copy(), n_days, eps_value)
+            # Train ML model
+            _, rmse, predicted_price, actual, _, _, _ = train_random_forest(df_scan.copy(), n_days, eps_value)
+
             ml_change_pct = (predicted_price - latest_close) / latest_close * 100
 
-            # Monte Carlo
+            # Monte Carlo Simulation (EPS-based PE adjustment)
             pe_ratio = latest_close / eps_value
             adjusted_mu = mu * (20.0 / pe_ratio) if pe_ratio > 0 else mu
             mc_sim = monte_carlo_simulation(S0=latest_close, mu=adjusted_mu, sigma=sigma,
