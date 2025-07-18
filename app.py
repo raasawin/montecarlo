@@ -20,7 +20,7 @@ def get_stock_data(ticker_symbol, period="1y"):
     return data
 
 # --------------------------------------
-# EPS Forecast (from yfinance calendar)
+# Fetch EPS forecast
 # --------------------------------------
 def get_eps_forecast(ticker_symbol):
     ticker = yf.Ticker(ticker_symbol)
@@ -57,12 +57,16 @@ def monte_carlo_simulation(S0, mu, sigma, T, N, M):
     return simulations
 
 # --------------------------------------
-# ML Training + CI
+# ML Model
 # --------------------------------------
 def train_random_forest(df, n_days_ahead, bootstrap_iters=1000, use_gridsearch=False, use_bootstrap=False, progress_bar=None):
     df['Target'] = df['Close'].shift(-n_days_ahead)
     features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS_Forecast']
     df = df.dropna()
+
+    if df.empty or len(df) < 50:
+        raise ValueError("Not enough data after feature cleaning. Try a longer time period.")
+
     X = df[features]
     y = df['Target']
 
@@ -99,7 +103,6 @@ def train_random_forest(df, n_days_ahead, bootstrap_iters=1000, use_gridsearch=F
             boot_preds.append(rf.predict(latest_features)[0])
             if i % max(1, bootstrap_iters // 100) == 0:
                 progress_bar.progress(min(i / bootstrap_iters, 1.0))
-
         ci_lower = np.percentile(boot_preds, 2.5)
         ci_upper = np.percentile(boot_preds, 97.5)
 
@@ -111,16 +114,11 @@ def train_random_forest(df, n_days_ahead, bootstrap_iters=1000, use_gridsearch=F
 st.sidebar.title("Settings")
 ticker = st.sidebar.text_input("Enter Stock Ticker", "AAPL")
 period = st.sidebar.selectbox("Historical Data Period", ["6mo", "1y", "2y", "5y"], index=1)
-n_simulations = st.sidebar.slider("Number of Monte Carlo Simulations", 100, 10000, 500, step=100)
+n_simulations = st.sidebar.slider("Monte Carlo Simulations", 100, 10000, 500, step=100)
 n_days = st.sidebar.slider("Days into the Future", 10, 180, 30, step=10)
 use_gridsearch = st.sidebar.checkbox("Use GridSearchCV (slower, better tuning)", value=False)
 use_bootstrap = st.sidebar.checkbox("Use Bootstrapping (slower, CI estimate)", value=False)
-
-# 🔧 Manual actual price override
-use_manual_actual = st.sidebar.checkbox("🔧 Manually enter actual last price?")
-manual_actual_price = None
-if use_manual_actual:
-    manual_actual_price = st.sidebar.number_input("Enter Actual Price", min_value=0.0, step=0.01)
+manual_price = st.sidebar.text_input("Manually Override Latest Close Price (Optional)", "")
 
 # --------------------------------------
 # Main App
@@ -132,11 +130,21 @@ try:
     df = add_technical_indicators(df)
 
     eps_forecast = get_eps_forecast(ticker)
-    st.sidebar.write(f"EPS Forecast (next quarter): {eps_forecast if not np.isnan(eps_forecast) else 'N/A'}")
     df['EPS_Forecast'] = eps_forecast
     df.dropna(inplace=True)
 
+    if df.empty or len(df) < 50:
+        st.error("Not enough valid data to train the model. Try selecting a longer period (e.g., 1y or 2y).")
+        st.stop()
+
     latest_close = df['Close'].iloc[-1]
+    if manual_price.strip():
+        try:
+            latest_close = float(manual_price)
+            st.info(f"📌 Using manually entered latest price: ${latest_close:.2f}")
+        except ValueError:
+            st.warning("⚠️ Invalid manual price input. Using automatic price instead.")
+
     log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
     mu, sigma = log_returns.mean(), log_returns.std()
 
@@ -156,23 +164,16 @@ try:
     progress_bar = st.progress(0)
 
     model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(
-        df, n_days,
-        bootstrap_iters=1000,
-        use_gridsearch=use_gridsearch,
-        use_bootstrap=use_bootstrap,
-        progress_bar=progress_bar
-    )
+        df, n_days, bootstrap_iters=1000, use_gridsearch=use_gridsearch,
+        use_bootstrap=use_bootstrap, progress_bar=progress_bar)
 
     ml_change_pct = (predicted_price - latest_close) / latest_close * 100
-    actual_price_display = manual_actual_price if manual_actual_price else actual_price
 
     st.subheader(f"Machine Learning Prediction ({n_days}-Day Close)")
     st.write(f"**Predicted Price**: ${predicted_price:.2f}")
     if ci_lower is not None and ci_upper is not None:
         st.write(f"**95% Prediction Interval**: ${ci_lower:.2f} to ${ci_upper:.2f}")
-    st.write(f"**Actual Price (last test sample)**: ${actual_price_display:.2f}")
-    if manual_actual_price:
-        st.caption("ℹ️ Using manually entered actual price.")
+    st.write(f"**Actual Price (last test sample)**: ${actual_price:.2f}")
     st.write(f"**RMSE**: ${rmse:.2f}")
     st.write(f"**Expected Price Change**: {ml_change_pct:+.2f}%")
     st.write(f"**Best Model Parameters**: `{best_params}`")
