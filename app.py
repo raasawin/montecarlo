@@ -1,11 +1,18 @@
 import streamlit as st
 import yfinance as yf
-import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
 from sklearn.metrics import mean_squared_error
 from sklearn.utils import resample
+import pandas as pd
+
+# Add this at the top of your file (with other imports)
+@st.cache_data(ttl=86400)
+def get_sp500_tickers():
+    url = "https://datahub.io/core/s-and-p-500-companies-financials/r/constituents.csv"
+    df = pd.read_csv(url)
+    return df['Symbol'].dropna().unique().tolist()
 
 st.set_page_config(layout="wide", page_title="Stock Price Forecast (MC + ML)")
 
@@ -253,3 +260,66 @@ if run_scan:
         st.dataframe(results_df.head(10))
     else:
         st.error("No valid results from scan.")
+
+
+
+# --------------------------------------
+# Market Scanner Section (full S&P 500)
+# --------------------------------------
+st.sidebar.markdown("---")
+st.sidebar.subheader("📡 Market Scanner (S&P 500)")
+
+run_sp500 = st.sidebar.button("🔍 Scan S&P 500")
+
+if run_sp500:
+    st.subheader("📊 Scanning S&P 500…")
+    tickers_sp = get_sp500_tickers()
+    scan_results = []
+    scan_progress = st.progress(0)
+
+    for idx, scan_ticker in enumerate(tickers_sp):
+        try:
+            df_scan = get_stock_data(scan_ticker, period)
+            df_scan = add_technical_indicators(df_scan)
+            df_scan.dropna(inplace=True)
+
+            latest_close = df_scan['Close'].iloc[-1]
+            log_returns = np.log(df_scan['Close'] / df_scan['Close'].shift(1)).dropna()
+            mu, sigma = log_returns.mean(), log_returns.std()
+
+            eps_value = 5.0  # placeholder or fetched from API
+            df_scan['EPS'] = eps_value
+
+            _, rmse, predicted_price, actual, _, _, _ = train_random_forest(df_scan.copy(), n_days, eps_value)
+            ml_pct = (predicted_price - latest_close) / latest_close * 100
+
+            pe_ratio = latest_close / eps_value
+            adjusted_mu = mu * (20.0 / pe_ratio) if pe_ratio > 0 else mu
+            mc_sim = monte_carlo_simulation(
+                S0=latest_close, mu=adjusted_mu,
+                sigma=sigma, T=n_days, N=n_days, M=300
+            )
+            mc_median = np.percentile(mc_sim[-1, :], 50)
+            mc_pct = (mc_median - latest_close) / latest_close * 100
+
+            scan_results.append({
+                'Ticker': scan_ticker,
+                'ML % Change': ml_pct,
+                'MC % Change': mc_pct,
+                'RMSE': rmse
+            })
+
+        except Exception as e:
+            # It's common for minor errors, continue scanning
+            pass
+
+        scan_progress.progress((idx + 1) / len(tickers_sp))
+
+    if scan_results:
+        df_out = pd.DataFrame(scan_results)
+        df_out.sort_values("ML % Change", ascending=False, inplace=True)
+        st.success(f"Top 10 bullish stocks from S&P 500:")
+        st.dataframe(df_out.head(10).reset_index(drop=True))
+    else:
+        st.error("No valid results could be generated.")
+
