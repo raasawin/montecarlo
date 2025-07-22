@@ -357,4 +357,53 @@ if os.path.exists(trade_log_path):
         st.error(f"Error reading trade log: {e}")
 else:
     st.info("No trade logs found.")
+# -------------------------
+# Enhanced S&P 500 Scanner
+# -------------------------
+st.subheader("S&P 500 Scanner (ML & Monte Carlo Predictions)")
+
+if st.button("Scan All S&P 500 Stocks"):
+    with st.spinner("Running full scan..."):
+        tickers = get_sp500_tickers()
+        scan_results = []
+
+        for t in tickers:
+            try:
+                df_scan = get_stock_data(t, period)
+                if df_scan.empty or len(df_scan) < 100:
+                    continue
+                df_scan = add_technical_indicators(df_scan)
+                latest_close_scan = df_scan["Close"].iloc[-1]
+
+                # ML Model
+                _, _, pred_price_ml, _, _, _, _ = train_random_forest(
+                    df_scan, n_days, eps,
+                    bootstrap_iters=100,
+                    use_gridsearch=False,
+                    use_bootstrap=False
+                )
+                ml_pct = 100 * (pred_price_ml - latest_close_scan) / latest_close_scan
+
+                # Monte Carlo Model
+                mu = df_scan['Close'].pct_change().mean()
+                sigma = df_scan['Close'].pct_change().std()
+                S0 = latest_close_scan
+                T = n_days / 252
+                simulations = monte_carlo_simulation(S0, mu, sigma, T, n_days, 100)
+                mc_median = np.median(simulations[-1])
+                mc_pct = 100 * (mc_median - S0) / S0
+
+                scan_results.append((t, latest_close_scan, pred_price_ml, ml_pct, mc_median, mc_pct))
+
+            except Exception:
+                continue
+
+        df_results = pd.DataFrame(scan_results, columns=[
+            "Ticker", "Current Price", "ML Predicted Price", "ML % Change",
+            "MC Median Price", "MC % Change"
+        ])
+        df_results = df_results.sort_values("ML % Change", ascending=False).reset_index(drop=True)
+
+        st.write("🔝 Top ML Forecasted Stocks in S&P 500:")
+        st.dataframe(df_results.head(20))
 
