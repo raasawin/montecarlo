@@ -59,7 +59,10 @@ def train_random_forest(df, n_days_ahead, eps, bootstrap_iters=1000, use_gridsea
     df['Target'] = df['Close'].shift(-n_days_ahead)
     df = df.dropna()
 
-    features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS']
+    features = [ 'Close', 'SMA_20', 'SMA_50', 'Momentum', 'Volatility', 'Volume_Change',
+    'RSI', 'MACD', 'MACD_Signal', 'BB_Upper', 'BB_Lower',
+    'Close_vs_SMA20', 'Close_vs_SMA50', 'Return_1d', 'Return_5d']
+    
     X = df[features]
     y = df['Target']
 
