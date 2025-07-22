@@ -363,7 +363,7 @@ else:
 st.subheader("S&P 500 Scanner (ML & Monte Carlo Predictions)")
 
 if st.button("Scan All S&P 500 Stocks"):
-    with st.spinner("Running full scan..."):
+    with st.spinner("Running full scan across all 500 stocks..."):
         tickers = get_sp500_tickers()
         scan_results = []
 
@@ -378,7 +378,7 @@ if st.button("Scan All S&P 500 Stocks"):
                 # ML Model
                 _, _, pred_price_ml, _, _, _, _ = train_random_forest(
                     df_scan, n_days, eps,
-                    bootstrap_iters=100,
+                    bootstrap_iters=0,
                     use_gridsearch=False,
                     use_bootstrap=False
                 )
@@ -389,7 +389,7 @@ if st.button("Scan All S&P 500 Stocks"):
                 sigma = df_scan['Close'].pct_change().std()
                 S0 = latest_close_scan
                 T = n_days / 252
-                simulations = monte_carlo_simulation(S0, mu, sigma, T, n_days, 100)
+                simulations = monte_carlo_simulation(S0, mu, sigma, T, n_days, M=500)
                 mc_median = np.median(simulations[-1])
                 mc_pct = 100 * (mc_median - S0) / S0
 
@@ -406,4 +406,3 @@ if st.button("Scan All S&P 500 Stocks"):
 
         st.write("🔝 Top ML Forecasted Stocks in S&P 500:")
         st.dataframe(df_results.head(20))
-
