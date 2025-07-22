@@ -279,6 +279,18 @@ M = n_simulations
 simulations = monte_carlo_simulation(S0, mu, sigma, T, N, M)
 
 st.line_chart(simulations)
+# Monte Carlo Stats
+final_prices = simulations[-1]
+mc_median = np.median(final_prices)
+mc_5th = np.percentile(final_prices, 5)
+mc_95th = np.percentile(final_prices, 95)
+
+mc_change_pct = ((mc_median - S0) / S0) * 100
+
+st.write(f"**Monte Carlo Median Price:** ${mc_median:.2f}")
+st.write(f"**5th Percentile Price:** ${mc_5th:.2f}")
+st.write(f"**95th Percentile Price:** ${mc_95th:.2f}")
+st.write(f"**Predicted % Change (Median):** {mc_change_pct:.2f}%")
 
 # ML Model Training & Prediction
 st.subheader("Random Forest Regression Model")
