@@ -1,13 +1,14 @@
 import streamlit as st
 import yfinance as yf
 import numpy as np
+import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
 from sklearn.metrics import mean_squared_error
 from sklearn.utils import resample
-import pandas as pd
 
-# Add this at the top of your file (with other imports)
+# --------------------------------------
+# Fetch S&P 500 tickers
 @st.cache_data(ttl=86400)
 def get_sp500_tickers():
     url = "https://datahub.io/core/s-and-p-500-companies-financials/r/constituents.csv"
@@ -18,7 +19,6 @@ st.set_page_config(layout="wide", page_title="Stock Price Forecast (MC + ML)")
 
 # --------------------------------------
 # Fetch stock data
-# --------------------------------------
 @st.cache_data(ttl=3600)
 def get_stock_data(ticker_symbol, period="1y"):
     ticker = yf.Ticker(ticker_symbol)
@@ -28,45 +28,33 @@ def get_stock_data(ticker_symbol, period="1y"):
 
 # --------------------------------------
 # Technical indicators
-# --------------------------------------
 def add_technical_indicators(df):
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
     df['Momentum'] = df['Close'].diff(4)
     df['Volatility'] = df['Close'].rolling(window=20).std()
     df['Volume_Change'] = df['Volume'].pct_change()
-
-    # RSI (14-day)
     delta = df['Close'].diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
-    avg_gain = pd.Series(gain).rolling(window=14).mean()
-    avg_loss = pd.Series(loss).rolling(window=14).mean()
-    rs = avg_gain / (avg_loss + 1e-10)
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(window=14).mean()
+    avg_loss = loss.rolling(window=14).mean()
+    rs = avg_gain / avg_loss
     df['RSI'] = 100 - (100 / (1 + rs))
-
-    # MACD
-    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
-    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = ema12 - ema26
+    df['EMA_12'] = df['Close'].ewm(span=12, adjust=False).mean()
+    df['EMA_26'] = df['Close'].ewm(span=26, adjust=False).mean()
+    df['MACD'] = df['EMA_12'] - df['EMA_26']
     df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-
-    # Bollinger Bands
-    df['BB_Upper'] = df['SMA_20'] + 2 * df['Volatility']
-    df['BB_Lower'] = df['SMA_20'] - 2 * df['Volatility']
-
-    # Relative price
+    df['BB_Upper'] = df['SMA_20'] + 2 * df['Close'].rolling(window=20).std()
+    df['BB_Lower'] = df['SMA_20'] - 2 * df['Close'].rolling(window=20).std()
     df['Close_vs_SMA20'] = df['Close'] - df['SMA_20']
     df['Close_vs_SMA50'] = df['Close'] - df['SMA_50']
-
-    # Lagged returns
     df['Return_1d'] = df['Close'].pct_change(1)
     df['Return_5d'] = df['Close'].pct_change(5)
-
     return df
+
 # --------------------------------------
 # Monte Carlo Simulation
-# --------------------------------------
 def monte_carlo_simulation(S0, mu, sigma, T, N, M):
     dt = T / N
     simulations = np.zeros((N, M))
@@ -78,18 +66,18 @@ def monte_carlo_simulation(S0, mu, sigma, T, N, M):
             prices.append(S_t)
         simulations[:, i] = prices
     return simulations
-
-# --------------------------------------
-# ML Model
-# --------------------------------------
+    # --------------------------------------
+# ML Model training
 def train_random_forest(df, n_days_ahead, eps, bootstrap_iters=1000, use_gridsearch=False, use_bootstrap=False, progress_bar=None):
-    df['EPS'] = eps  # Add EPS as a constant feature
+    df['EPS'] = eps  # Add EPS as constant feature
     df['Target'] = df['Close'].shift(-n_days_ahead)
     df = df.dropna()
 
-    features = [ 'Close', 'SMA_20', 'SMA_50', 'Momentum', 'Volatility', 'Volume_Change',
-    'RSI', 'MACD', 'MACD_Signal', 'BB_Upper', 'BB_Lower',
-    'Close_vs_SMA20', 'Close_vs_SMA50', 'Return_1d', 'Return_5d']
+    features = [
+        'Close', 'SMA_20', 'SMA_50', 'Momentum', 'Volatility', 'Volume_Change',
+        'RSI', 'MACD', 'MACD_Signal', 'BB_Upper', 'BB_Lower',
+        'Close_vs_SMA20', 'Close_vs_SMA50', 'Return_1d', 'Return_5d'
+    ]
     
     X = df[features]
     y = df['Target']
@@ -138,7 +126,6 @@ def train_random_forest(df, n_days_ahead, eps, bootstrap_iters=1000, use_gridsea
 
 # --------------------------------------
 # Sidebar Inputs
-# --------------------------------------
 st.sidebar.title("Settings")
 ticker = st.sidebar.text_input("Enter Stock Ticker", "AAPL")
 period = st.sidebar.selectbox("Historical Data Period", ["6mo", "1y", "2y", "5y"], index=1)
@@ -153,12 +140,10 @@ manual_price = None
 if use_manual_price:
     manual_price = st.sidebar.number_input("Enter Latest Close Price", min_value=0.0, value=150.0, step=0.1)
 
-# NEW EPS input added here
 eps = st.sidebar.number_input("Enter EPS (Earnings Per Share)", min_value=0.01, value=5.0, step=0.01)
 
 # --------------------------------------
 # Main App Logic
-# --------------------------------------
 st.title(f"📈 Forecasting Stock Price: {ticker.upper()}")
 
 try:
@@ -167,7 +152,7 @@ try:
 
     if use_manual_price and manual_price is not None:
         df.iloc[-1, df.columns.get_loc("Close")] = manual_price
-        df = add_technical_indicators(df)  # Recalculate indicators after price change
+        df = add_technical_indicators(df)  # recalc indicators
 
     df.dropna(inplace=True)
 
@@ -175,7 +160,7 @@ try:
     log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
     mu, sigma = log_returns.mean(), log_returns.std()
 
-    # Calculate P/E ratio and adjust mu for Monte Carlo drift
+    # P/E ratio and mu adjustment for Monte Carlo
     pe_ratio = latest_close / eps if eps > 0 else np.nan
     baseline_pe = 20.0
     adjusted_mu = mu * (baseline_pe / pe_ratio) if pe_ratio > 0 else mu
@@ -224,133 +209,98 @@ try:
 except Exception as e:
     st.error(f"Error loading data or running simulation: {e}")
 
+import yfinance as yf
+import pandas as pd
+from tqdm import tqdm
 
-# --------------------------------------
-# --------------------------------------
-# Market Scanner Section
-# --------------------------------------
-st.sidebar.markdown("---")
-st.sidebar.subheader("📡 Market Scanner")
+# --- Helper to get S&P 500 tickers ---
+@st.cache_data(ttl=86400)
+def get_sp500_tickers():
+    url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+    table = pd.read_html(url)
+    sp500_df = table[0]
+    return sp500_df['Symbol'].tolist()
 
-run_scan = st.sidebar.button("🔍 Scan Market")
-
-if run_scan:
-    st.subheader("📊 Scanning Selected Market Tickers...")
-
-    tickers_to_scan = ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'TSLA', 'META', 'AMD', 'CRM', 'NFLX']
-    scan_results = []
-
-    scan_progress = st.progress(0)
-
-    for i, scan_ticker in enumerate(tickers_to_scan):
+# --- Scanner Function ---
+def run_scanner(tickers, period, n_simulations, n_days, eps, use_gridsearch, use_bootstrap):
+    results = []
+    progress_text = "Scanning tickers..."
+    progress_bar = st.progress(0)
+    for i, tk in enumerate(tqdm(tickers, desc=progress_text)):
         try:
-            df_scan = get_stock_data(scan_ticker, period)
-            df_scan = add_technical_indicators(df_scan)
-            df_scan.dropna(inplace=True)
-
-            latest_close = df_scan['Close'].iloc[-1]
-            log_returns = np.log(df_scan['Close'] / df_scan['Close'].shift(1)).dropna()
+            df = get_stock_data(tk, period)
+            df = add_technical_indicators(df)
+            df.dropna(inplace=True)
+            latest_close = df['Close'].iloc[-1]
+            log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
             mu, sigma = log_returns.mean(), log_returns.std()
+            pe_ratio = latest_close / eps if eps > 0 else np.nan
+            baseline_pe = 20.0
+            adjusted_mu = mu * (baseline_pe / pe_ratio) if pe_ratio > 0 else mu
 
-            # Use default EPS (or fetch from API later)
-            eps_value = 5.0
-            df_scan['EPS'] = eps_value
+            sim_data = monte_carlo_simulation(S0=latest_close, mu=adjusted_mu, sigma=sigma, T=n_days, N=n_days, M=n_simulations)
+            final_prices = sim_data[-1, :]
+            mc_p50 = np.percentile(final_prices, 50)
 
-            # Train ML model
-            _, rmse, predicted_price, actual, _, _, _ = train_random_forest(df_scan.copy(), n_days, eps_value)
+            model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(
+                df, n_days, eps,
+                bootstrap_iters=100,
+                use_gridsearch=use_gridsearch,
+                use_bootstrap=use_bootstrap,
+                progress_bar=None
+            )
 
             ml_change_pct = (predicted_price - latest_close) / latest_close * 100
+            mc_change_pct = (mc_p50 - latest_close) / latest_close * 100
 
-            # Monte Carlo Simulation (EPS-based PE adjustment)
-            pe_ratio = latest_close / eps_value
-            adjusted_mu = mu * (20.0 / pe_ratio) if pe_ratio > 0 else mu
-            mc_sim = monte_carlo_simulation(S0=latest_close, mu=adjusted_mu, sigma=sigma,
-                                            T=n_days, N=n_days, M=300)
-            mc_median = np.percentile(mc_sim[-1, :], 50)
-            mc_change_pct = (mc_median - latest_close) / latest_close * 100
+            combined_score = (ml_change_pct + mc_change_pct) / 2
 
-            scan_results.append({
-                'Ticker': scan_ticker,
-                'Current Price': latest_close,
-                'ML Prediction': predicted_price,
-                'ML % Change': ml_change_pct,
-                'MC Median': mc_median,
-                'MC % Change': mc_change_pct,
-                'RMSE': rmse
+            results.append({
+                "Ticker": tk,
+                "Latest Close": latest_close,
+                "ML % Change": ml_change_pct,
+                "MC Median % Change": mc_change_pct,
+                "Combined Score": combined_score,
+                "RMSE": rmse
             })
 
         except Exception as e:
-            st.warning(f"Skipping {scan_ticker}: {e}")
+            # Optionally log error somewhere
+            continue
+        progress_bar.progress(min((i + 1) / len(tickers), 1.0))
 
-        scan_progress.progress((i + 1) / len(tickers_to_scan))
+    return pd.DataFrame(results)
 
-    if scan_results:
-        results_df = pd.DataFrame(scan_results)
-        results_df.sort_values("ML % Change", ascending=False, inplace=True)
-        st.success(f"Scan complete. Top {min(10, len(results_df))} results shown below:")
-        st.dataframe(results_df.head(10))
-    else:
-        st.error("No valid results from scan.")
+# --- Sidebar Scanner Options ---
+scan_sp500 = st.sidebar.checkbox("Run S&P 500 Scanner")
 
+if scan_sp500:
+    st.sidebar.write("⚠️ Scanner can take several minutes.")
 
+    sp500_tickers = get_sp500_tickers()
+    scan_period = st.sidebar.selectbox("Data Period for Scanner", ["1y", "2y", "5y"], index=1)
+    scan_days = st.sidebar.slider("Forecast Days for Scanner", 10, 90, 30, step=10)
+    scan_sims = st.sidebar.slider("Simulations for Scanner", 100, 1000, 300, step=100)
 
-# --------------------------------------
-# Market Scanner Section (full S&P 500)
-# --------------------------------------
-st.sidebar.markdown("---")
-st.sidebar.subheader("📡 Market Scanner (S&P 500)")
-
-run_sp500 = st.sidebar.button("🔍 Scan S&P 500")
-
-if run_sp500:
-    st.subheader("📊 Scanning S&P 500…")
-    tickers_sp = get_sp500_tickers()
-    scan_results = []
-    scan_progress = st.progress(0)
-
-    for idx, scan_ticker in enumerate(tickers_sp):
-        try:
-            df_scan = get_stock_data(scan_ticker, period)
-            df_scan = add_technical_indicators(df_scan)
-            df_scan.dropna(inplace=True)
-
-            latest_close = df_scan['Close'].iloc[-1]
-            log_returns = np.log(df_scan['Close'] / df_scan['Close'].shift(1)).dropna()
-            mu, sigma = log_returns.mean(), log_returns.std()
-
-            eps_value = 5.0  # placeholder or fetched from API
-            df_scan['EPS'] = eps_value
-
-            _, rmse, predicted_price, actual, _, _, _ = train_random_forest(df_scan.copy(), n_days, eps_value)
-            ml_pct = (predicted_price - latest_close) / latest_close * 100
-
-            pe_ratio = latest_close / eps_value
-            adjusted_mu = mu * (20.0 / pe_ratio) if pe_ratio > 0 else mu
-            mc_sim = monte_carlo_simulation(
-                S0=latest_close, mu=adjusted_mu,
-                sigma=sigma, T=n_days, N=n_days, M=300
+    if st.sidebar.button("Start Scan"):
+        with st.spinner("Scanning S&P 500 stocks..."):
+            df_scan = run_scanner(
+                sp500_tickers,
+                period=scan_period,
+                n_simulations=scan_sims,
+                n_days=scan_days,
+                eps=eps,
+                use_gridsearch=False,
+                use_bootstrap=False
             )
-            mc_median = np.percentile(mc_sim[-1, :], 50)
-            mc_pct = (mc_median - latest_close) / latest_close * 100
+            st.write("### Scanner Results")
+            st.dataframe(df_scan.sort_values("Combined Score", ascending=False).reset_index(drop=True))
 
-            scan_results.append({
-                'Ticker': scan_ticker,
-                'ML % Change': ml_pct,
-                'MC % Change': mc_pct,
-                'RMSE': rmse
-            })
+            st.write("#### Top 10 by ML % Change")
+            st.dataframe(df_scan.sort_values("ML % Change", ascending=False).head(10).reset_index(drop=True))
 
-        except Exception as e:
-            # It's common for minor errors, continue scanning
-            pass
+            st.write("#### Top 10 by MC Median % Change")
+            st.dataframe(df_scan.sort_values("MC Median % Change", ascending=False).head(10).reset_index(drop=True))
 
-        scan_progress.progress((idx + 1) / len(tickers_sp))
-
-    if scan_results:
-        df_out = pd.DataFrame(scan_results)
-        df_out.sort_values("ML % Change", ascending=False, inplace=True)
-        st.success(f"Top 10 bullish stocks from S&P 500:")
-        st.dataframe(df_out.head(10).reset_index(drop=True))
-    else:
-        st.error("No valid results could be generated.")
-
+            st.write("#### Top 10 by Combined Score")
+            st.dataframe(df_scan.sort_values("Combined Score", ascending=False).head(10).reset_index(drop=True))
