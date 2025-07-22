@@ -152,6 +152,12 @@ if use_manual_price:
     manual_price = st.sidebar.number_input("Enter Latest Close Price", min_value=0.0, value=150.0, step=0.1)
 
 eps = st.sidebar.number_input("Enter EPS (Earnings Per Share)", min_value=0.01, value=5.0, step=0.01)
+st.sidebar.markdown("---")
+st.sidebar.header("Risk Settings")
+
+account_size = st.sidebar.number_input("Account Size ($)", value=10000, min_value=1000)
+risk_per_trade = st.sidebar.slider("Risk per Trade (%)", 0.1, 5.0, 1.0, step=0.1) / 100
+use_take_profit = st.sidebar.checkbox("Use Take-Profit Target", value=True)
 
 # ---------------------------
 # Run S&P 500 Scanner Button
@@ -255,6 +261,22 @@ try:
     )
 
     ml_change_pct = (predicted_price - latest_close) / latest_close * 100
+# --- Trade Plan Logic ---
+stop_price = ci_lower if ci_lower is not None else p5
+take_profit_price = predicted_price if use_take_profit else None
+
+dollar_risk_per_share = max(1e-6, latest_close - stop_price)
+shares = (risk_per_trade * account_size) / dollar_risk_per_share
+shares = min(shares, account_size / latest_close)
+max_loss = shares * dollar_risk_per_share
+
+st.subheader("📏 Trade Plan")
+st.write(f"**Entry**: ${latest_close:.2f}")
+st.write(f"**Stop Loss**: ${stop_price:.2f}")
+if use_take_profit:
+    st.write(f"**Take Profit**: ${take_profit_price:.2f}")
+st.write(f"**Shares to Buy**: {int(shares)}")
+st.write(f"**Max Risk**: ${max_loss:.2f}")
 
     st.subheader(f"Machine Learning Prediction ({n_days}-Day Close)")
     st.write(f"**Predicted Price**: ${predicted_price:.2f}")
@@ -273,6 +295,86 @@ try:
         st.error(f"**Likely Downward Trend** — ML: ~{ml_change_pct:.2f}%, MC: {(p50 - latest_close)/latest_close:.2%}")
     else:
         st.warning("**Uncertain** — Mixed or flat predictions. Use caution.")
+# --- Trade Log ---
+trade_log = pd.DataFrame([{
+    'Date': df.index[-1],
+    'Ticker': ticker.upper(),
+    'Entry': latest_close,
+    'Stop': stop_price,
+    'Target': take_profit_price,
+    'Shares': int(shares),
+    'Predicted': predicted_price,
+    'Actual_Future': df['Close'].shift(-n_days).iloc[-1] if len(df) > n_days else None,
+    'Model_Change_%': ml_change_pct,
+    'MC_Change_%': (p50 - latest_close) / latest_close * 100
+}])
+
+st.subheader("📘 Trade Log (Latest)")
+st.dataframe(trade_log)
 
 except Exception as e:
     st.error(f"Error loading data or running simulation: {e}")
+st.markdown("---")
+st.subheader("🔁 Backtesting Simulation")
+
+def backtest_model(df, eps, n_days, risk_pct, account_size, use_take_profit=True, lookback=200):
+    logs = []
+    equity = account_size
+
+    for i in range(lookback, len(df) - n_days):
+        try:
+            df_bt = df.iloc[:i].copy()
+            df_bt = add_technical_indicators(df_bt)
+            df_bt.dropna(inplace=True)
+            model, _, pred, _, _, _, _ = train_random_forest(df_bt, n_days, eps)
+
+            entry = df_bt['Close'].iloc[-1]
+            stop = entry * 0.95
+            target = pred if use_take_profit else None
+            future_close = df['Close'].iloc[i + n_days]
+
+            dollar_risk = entry - stop
+            shares = (risk_pct * equity) / dollar_risk
+            shares = min(shares, equity / entry)
+
+            if future_close <= stop:
+                exit_price = stop
+                outcome = "Stopped"
+            elif target and future_close >= target:
+                exit_price = target
+                outcome = "Target Hit"
+            else:
+                exit_price = future_close
+                outcome = "Held"
+
+            pnl = shares * (exit_price - entry)
+            equity += pnl
+
+            logs.append({
+                'Date': df.index[i],
+                'Entry': entry,
+                'Exit': exit_price,
+                'Target': target,
+                'Stop': stop,
+                'Actual': future_close,
+                'Shares': int(shares),
+                'PnL': pnl,
+                'Equity': equity,
+                'Outcome': outcome
+            })
+        except:
+            continue
+
+    return pd.DataFrame(logs)
+
+if st.checkbox("Run Backtest on This Ticker"):
+    with st.spinner("Running backtest..."):
+        bt_results = backtest_model(df.copy(), eps, n_days, risk_per_trade, account_size, use_take_profit)
+        if not bt_results.empty:
+            st.write(f"**Final Equity:** ${bt_results['Equity'].iloc[-1]:.2f}")
+            st.write(f"**Total Return:** {(bt_results['Equity'].iloc[-1] - account_size)/account_size:.2%}")
+            st.write(f"**Win Rate:** {(bt_results['PnL'] > 0).mean():.2%}")
+            st.write(f"**Total Trades:** {len(bt_results)}")
+            st.dataframe(bt_results.tail(10))
+        else:
+            st.warning("No valid trades generated during backtest.")
