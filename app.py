@@ -308,6 +308,8 @@ except Exception as e:
 st.write(f"RMSE on Test Set: {rmse:.2f}")
 st.write(f"Latest Actual Close Price: ${latest_close:.2f}")
 st.write(f"Predicted Price in {n_days} days: ${predicted_price:.2f}")
+ml_pct_change = ((predicted_price - latest_close) / latest_close) * 100
+st.write(f"**Predicted % Change (ML):** {ml_pct_change:.2f}%")
 if ci_lower and ci_upper:
     st.write(f"95% Prediction Interval: ${ci_lower:.2f} - ${ci_upper:.2f}")
 st.write(f"Best Model Parameters: {best_params}")
