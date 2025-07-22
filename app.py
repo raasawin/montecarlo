@@ -261,6 +261,60 @@ try:
 
 except Exception as e:
     st.error(f"Error: {e}")
+if st.sidebar.button("Scan S&P 500"):
+    st.info("Scanning S&P 500 tickers, please wait... This may take a few minutes.")
+
+    sp500_tickers = get_sp500_tickers()
+    scan_results = []
+
+    progress_text = st.empty()
+    progress_bar = st.progress(0)
+
+    for i, tkr in enumerate(sp500_tickers):
+        try:
+            df_tkr = get_stock_data(tkr, period)
+            df_tkr = add_technical_indicators(df_tkr)
+            df_tkr.dropna(inplace=True)
+            latest_close_tkr = df_tkr['Close'].iloc[-1]
+
+            log_returns_tkr = np.log(df_tkr['Close'] / df_tkr['Close'].shift(1)).dropna()
+            mu_tkr, sigma_tkr = log_returns_tkr.mean(), log_returns_tkr.std()
+
+            # Monte Carlo median price
+            sim_data_tkr = monte_carlo_simulation(S0=latest_close_tkr, mu=mu_tkr, sigma=sigma_tkr,
+                                                  T=n_days, N=n_days, M=100)
+            final_prices_tkr = sim_data_tkr[-1, :]
+            p50_tkr = np.percentile(final_prices_tkr, 50)
+            mc_change_pct = (p50_tkr - latest_close_tkr) / latest_close_tkr * 100
+
+            # ML prediction
+            model_tkr, rmse_tkr, predicted_price_tkr, actual_price_tkr, ci_lower_tkr, ci_upper_tkr, _ = train_random_forest(
+                df_tkr, n_days, eps, bootstrap_iters=100, use_gridsearch=False, use_bootstrap=False)
+
+            ml_change_pct_tkr = (predicted_price_tkr - latest_close_tkr) / latest_close_tkr * 100
+
+            scan_results.append({
+                'Ticker': tkr,
+                'Latest Close': latest_close_tkr,
+                'MC Median % Change': mc_change_pct,
+                'ML Predicted % Change': ml_change_pct_tkr,
+                'RMSE': rmse_tkr
+            })
+
+        except Exception as e:
+            # Log error but keep scanning
+            scan_results.append({'Ticker': tkr, 'Error': str(e)})
+
+        progress_bar.progress((i + 1) / len(sp500_tickers))
+        progress_text.text(f"Processed {i + 1} / {len(sp500_tickers)} tickers")
+
+    # Show results as a DataFrame sorted by ML predicted change descending
+    results_df = pd.DataFrame(scan_results)
+    results_df = results_df.dropna(subset=['ML Predicted % Change'])
+    results_df = results_df.sort_values(by='ML Predicted % Change', ascending=False)
+
+    st.subheader("S&P 500 Scan Results (Top 20 by ML Predicted % Change)")
+    st.dataframe(results_df.head(20))
 
 # -----------------------------
 # Backtest Log Viewer
