@@ -95,18 +95,34 @@ def get_sp500_tickers():
 # --------------------------------------
 # Technical indicators (ALL added)
 # --------------------------------------
-def add_technical_indicators(df):
-    df['SMA_20'] = df['Close'].rolling(window=20).mean()
-    df['Momentum'] = df['Close'].diff(4)
-    df['Volatility'] = df['Close'].rolling(window=20).std()
-    df['Volume_Change'] = df['Volume'].pct_change()
-    # Added indicators:
-    df['SMA_50'] = df['Close'].rolling(window=50).mean()
-    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
-    df['RSI_14'] = compute_rsi(df['Close'], 14)
-    df['MACD'] = compute_macd(df['Close'])
-    df['MACD_Signal'] = compute_macd_signal(df['Close'])
+def add_technical_indicators(df, n_days_ahead):
+    df = df.copy()
+
+    # Simple Moving Averages
+    df['SMA_20'] = df['Close'].rolling(window=20).mean().shift(n_days_ahead)
+    df['SMA_50'] = df['Close'].rolling(window=50).mean().shift(n_days_ahead)
+
+    # Exponential Moving Average
+    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean().shift(n_days_ahead)
+
+    # Momentum
+    df['Momentum'] = df['Close'].diff(4).shift(n_days_ahead)
+
+    # Volatility
+    df['Volatility'] = df['Close'].rolling(window=20).std().shift(n_days_ahead)
+
+    # Volume Change
+    df['Volume_Change'] = df['Volume'].pct_change().shift(n_days_ahead)
+
+    # RSI
+    df['RSI_14'] = compute_rsi(df['Close'], 14).shift(n_days_ahead)
+
+    # MACD and Signal
+    df['MACD'] = compute_macd(df['Close']).shift(n_days_ahead)
+    df['MACD_Signal'] = compute_macd_signal(df['Close']).shift(n_days_ahead)
+
     return df
+
 
 def compute_rsi(series, period=14):
     delta = series.diff()
@@ -413,6 +429,7 @@ if run_backtest:
 # ML Strategy Backtesting Section
 # --------------------------------------
 st.subheader("🔄 ML Strategy Backtest (Walk-Forward)")
+df = add_technical_indicators(df, n_days_ahead)
 
 if st.button("Run ML Backtest"):
     with st.spinner("Running ML backtest... please wait..."):
