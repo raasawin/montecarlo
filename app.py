@@ -8,14 +8,40 @@ from sklearn.metrics import mean_squared_error
 from sklearn.utils import resample
 
 # --------------------------------------
-# Fetch S&P 500 tickers
+# Cache S&P 500 tickers (only once)
 @st.cache_data(ttl=86400)
 def get_sp500_tickers():
-    url = "https://datahub.io/core/s-and-p-500-companies-financials/r/constituents.csv"
-    df = pd.read_csv(url)
-    return df['Symbol'].dropna().unique().tolist()
+    url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+    table = pd.read_html(url)
+    sp500_df = table[0]
+    return sp500_df['Symbol'].tolist()
 
-st.set_page_config(layout="wide", page_title="Stock Price Forecast (MC + ML)")
+# --------------------------------------
+# Sidebar Inputs
+st.sidebar.title("Settings")
+
+ticker = st.sidebar.text_input("Enter Stock Ticker", "AAPL")
+period = st.sidebar.selectbox("Historical Data Period", ["6mo", "1y", "2y", "5y"], index=1)
+n_simulations = st.sidebar.slider("Monte Carlo Simulations", 100, 10000, 500, step=100)
+n_days = st.sidebar.slider("Days into the Future", 10, 180, 30, step=10)
+
+use_gridsearch = st.sidebar.checkbox("Use GridSearchCV (slower, better tuning)", value=False)
+use_bootstrap = st.sidebar.checkbox("Use Bootstrapping for CI (slower)", value=False)
+use_manual_price = st.sidebar.checkbox("Use Manual Close Price")
+
+manual_price = None
+if use_manual_price:
+    manual_price = st.sidebar.number_input("Enter Latest Close Price", min_value=0.0, value=150.0, step=0.1)
+
+eps = st.sidebar.number_input("Enter EPS (Earnings Per Share)", min_value=0.01, value=5.0, step=0.01)
+
+# Scanner checkbox and additional scanner options
+scan_sp500 = st.sidebar.checkbox("Run S&P 500 Scanner")
+if scan_sp500:
+    st.sidebar.write("⚠️ Scanner can take several minutes.")
+    scan_period = st.sidebar.selectbox("Data Period for Scanner", ["1y", "2y", "5y"], index=1)
+    scan_days = st.sidebar.slider("Forecast Days for Scanner", 10, 90, 30, step=10)
+    scan_sims = st.sidebar.slider("Simulations for Scanner", 100, 1000, 300, step=100)
 
 # --------------------------------------
 # Fetch stock data
@@ -66,7 +92,8 @@ def monte_carlo_simulation(S0, mu, sigma, T, N, M):
             prices.append(S_t)
         simulations[:, i] = prices
     return simulations
-    # --------------------------------------
+
+# --------------------------------------
 # ML Model training
 def train_random_forest(df, n_days_ahead, eps, bootstrap_iters=1000, use_gridsearch=False, use_bootstrap=False, progress_bar=None):
     df['EPS'] = eps  # Add EPS as constant feature
@@ -125,107 +152,9 @@ def train_random_forest(df, n_days_ahead, eps, bootstrap_iters=1000, use_gridsea
     return best_model, rmse, predicted_price, y_test.values[-1], ci_lower, ci_upper, best_params
 
 # --------------------------------------
-# Sidebar Inputs
-st.sidebar.title("Settings")
-ticker = st.sidebar.text_input("Enter Stock Ticker", "AAPL")
-period = st.sidebar.selectbox("Historical Data Period", ["6mo", "1y", "2y", "5y"], index=1)
-n_simulations = st.sidebar.slider("Monte Carlo Simulations", 100, 10000, 500, step=100)
-n_days = st.sidebar.slider("Days into the Future", 10, 180, 30, step=10)
-
-use_gridsearch = st.sidebar.checkbox("Use GridSearchCV (slower, better tuning)", value=False)
-use_bootstrap = st.sidebar.checkbox("Use Bootstrapping for CI (slower)", value=False)
-use_manual_price = st.sidebar.checkbox("Use Manual Close Price")
-
-manual_price = None
-if use_manual_price:
-    manual_price = st.sidebar.number_input("Enter Latest Close Price", min_value=0.0, value=150.0, step=0.1)
-
-eps = st.sidebar.number_input("Enter EPS (Earnings Per Share)", min_value=0.01, value=5.0, step=0.01)
-
-# --------------------------------------
-# Main App Logic
-st.title(f"📈 Forecasting Stock Price: {ticker.upper()}")
-
-try:
-    df = get_stock_data(ticker, period)
-    df = add_technical_indicators(df)
-
-    if use_manual_price and manual_price is not None:
-        df.iloc[-1, df.columns.get_loc("Close")] = manual_price
-        df = add_technical_indicators(df)  # recalc indicators
-
-    df.dropna(inplace=True)
-
-    latest_close = df['Close'].iloc[-1]
-    log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
-    mu, sigma = log_returns.mean(), log_returns.std()
-
-    # P/E ratio and mu adjustment for Monte Carlo
-    pe_ratio = latest_close / eps if eps > 0 else np.nan
-    baseline_pe = 20.0
-    adjusted_mu = mu * (baseline_pe / pe_ratio) if pe_ratio > 0 else mu
-
-    sim_data = monte_carlo_simulation(S0=latest_close, mu=adjusted_mu, sigma=sigma, T=n_days, N=n_days, M=n_simulations)
-    final_prices = sim_data[-1, :]
-    p5 = np.percentile(final_prices, 5)
-    p50 = np.percentile(final_prices, 50)
-    p95 = np.percentile(final_prices, 95)
-
-    st.subheader("Monte Carlo Simulation Results")
-    st.write(f"**5th percentile price**: ${p5:.2f} ({(p5 - latest_close)/latest_close:.2%})")
-    st.write(f"**Median price**: ${p50:.2f} ({(p50 - latest_close)/latest_close:.2%})")
-    st.write(f"**95th percentile price**: ${p95:.2f} ({(p95 - latest_close)/latest_close:.2%})")
-
-    progress_bar = st.progress(0)
-
-    model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(
-        df, n_days, eps,
-        bootstrap_iters=1000,
-        use_gridsearch=use_gridsearch,
-        use_bootstrap=use_bootstrap,
-        progress_bar=progress_bar
-    )
-
-    ml_change_pct = (predicted_price - latest_close) / latest_close * 100
-
-    st.subheader(f"Machine Learning Prediction ({n_days}-Day Close)")
-    st.write(f"**Predicted Price**: ${predicted_price:.2f}")
-    if ci_lower is not None and ci_upper is not None:
-        st.write(f"**95% Prediction Interval**: ${ci_lower:.2f} to ${ci_upper:.2f}")
-    st.write(f"**Actual Price (last test sample)**: ${actual_price:.2f}")
-    st.write(f"**RMSE**: ${rmse:.2f}")
-    st.write(f"**Expected Price Change**: {ml_change_pct:+.2f}%")
-    st.write(f"**Best Model Parameters**: `{best_params}`")
-
-    st.markdown("---")
-    st.subheader("📊 Final Summary")
-    if ml_change_pct > 1 and p50 > latest_close:
-        st.success(f"**Likely Upward Trend** — ML: ~{ml_change_pct:.2f}%, MC: {(p50 - latest_close)/latest_close:.2%}")
-    elif ml_change_pct < -1 and p50 < latest_close:
-        st.error(f"**Likely Downward Trend** — ML: ~{ml_change_pct:.2f}%, MC: {(p50 - latest_close)/latest_close:.2%}")
-    else:
-        st.warning("**Uncertain** — Mixed or flat predictions. Use caution.")
-
-except Exception as e:
-    st.error(f"Error loading data or running simulation: {e}")
-
-import yfinance as yf
-import pandas as pd
-from tqdm import tqdm
-
-# --- Helper to get S&P 500 tickers ---
-@st.cache_data(ttl=86400)
-def get_sp500_tickers():
-    url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
-    table = pd.read_html(url)
-    sp500_df = table[0]
-    return sp500_df['Symbol'].tolist()
-
-# --- Scanner Function ---
-# --- Scanner Function ---
+# Scanner Function
 def run_scanner(tickers, period, n_simulations, n_days, eps, use_gridsearch, use_bootstrap):
     results = []
-    progress_text = "Scanning tickers..."
     progress_bar = st.progress(0)
     total = len(tickers)
     for i, tk in enumerate(tickers):
@@ -263,46 +192,4 @@ def run_scanner(tickers, period, n_simulations, n_days, eps, use_gridsearch, use
                 "ML % Change": ml_change_pct,
                 "MC Median % Change": mc_change_pct,
                 "Combined Score": combined_score,
-                "RMSE": rmse
-            })
-
-        except Exception as e:
-            # Optionally log error somewhere
-            continue
-        
-        progress_bar.progress(min((i + 1) / total, 1.0))
-
-    return pd.DataFrame(results)
-# --- Sidebar Scanner Options ---
-scan_sp500 = st.sidebar.checkbox("Run S&P 500 Scanner")
-
-if scan_sp500:
-    st.sidebar.write("⚠️ Scanner can take several minutes.")
-
-    sp500_tickers = get_sp500_tickers()
-    scan_period = st.sidebar.selectbox("Data Period for Scanner", ["1y", "2y", "5y"], index=1)
-    scan_days = st.sidebar.slider("Forecast Days for Scanner", 10, 90, 30, step=10)
-    scan_sims = st.sidebar.slider("Simulations for Scanner", 100, 1000, 300, step=100)
-
-    if st.sidebar.button("Start Scan"):
-        with st.spinner("Scanning S&P 500 stocks..."):
-            df_scan = run_scanner(
-                sp500_tickers,
-                period=scan_period,
-                n_simulations=scan_sims,
-                n_days=scan_days,
-                eps=eps,
-                use_gridsearch=False,
-                use_bootstrap=False
-            )
-            st.write("### Scanner Results")
-            st.dataframe(df_scan.sort_values("Combined Score", ascending=False).reset_index(drop=True))
-
-            st.write("#### Top 10 by ML % Change")
-            st.dataframe(df_scan.sort_values("ML % Change", ascending=False).head(10).reset_index(drop=True))
-
-            st.write("#### Top 10 by MC Median % Change")
-            st.dataframe(df_scan.sort_values("MC Median % Change", ascending=False).head(10).reset_index(drop=True))
-
-            st.write("#### Top 10 by Combined Score")
-            st.dataframe(df_scan.sort_values("Combined Score", ascending=False).head(10).reset_index(drop=True))
+                "RMSE":
