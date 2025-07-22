@@ -165,6 +165,8 @@ if use_manual_price:
     manual_price = st.sidebar.number_input("Enter Latest Close Price", min_value=0.0, value=150.0, step=0.1)
 
 eps = st.sidebar.number_input("Enter EPS (Earnings Per Share)", min_value=0.01, value=5.0, step=0.01)
+capital = st.sidebar.number_input("Trading Capital ($)", min_value=100.0, value=10000.0, step=100.0)
+risk_pct = st.sidebar.slider("Risk per Trade (%)", min_value=0.1, max_value=10.0, value=1.0, step=0.1) / 100.0
 account_balance = st.sidebar.number_input("Account Balance ($)", min_value=100.0, value=10000.0, step=100.0)
 risk_per_trade = st.sidebar.slider("Risk per Trade (%)", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
 rr_ratio = st.sidebar.slider("Risk-Reward Ratio", min_value=1.0, max_value=5.0, value=2.0, step=0.5)
