@@ -141,6 +141,45 @@ if use_manual_price:
     manual_price = st.sidebar.number_input("Enter Latest Close Price", min_value=0.0, value=150.0, step=0.1)
 
 eps = st.sidebar.number_input("Enter EPS (Earnings Per Share)", min_value=0.01, value=5.0, step=0.01)
+# --- Sidebar Scanner Options ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("📡 Market Scanner")
+
+scan_sp500 = st.sidebar.checkbox("Run S&P 500 Scanner")
+
+if scan_sp500:
+    st.sidebar.write("⚠️ Scanner may take several minutes.")
+
+    scan_period = st.sidebar.selectbox("Scanner Data Period", ["6mo", "1y", "2y", "5y"], index=1)
+    scan_days = st.sidebar.slider("Forecast Days (Scanner)", 10, 90, 30, step=10)
+    scan_sims = st.sidebar.slider("MC Simulations (Scanner)", 100, 1000, 300, step=100)
+
+    if st.sidebar.button("🔍 Start Scan"):
+        with st.spinner("Scanning S&P 500 stocks..."):
+            sp500_tickers = get_sp500_tickers()
+            df_scan = run_scanner(
+                sp500_tickers,
+                period=scan_period,
+                n_simulations=scan_sims,
+                n_days=scan_days,
+                eps=eps,
+                use_gridsearch=False,
+                use_bootstrap=False
+            )
+            if df_scan.empty:
+                st.warning("No valid scan results found.")
+            else:
+                st.markdown("## 🔎 Scanner Results")
+                st.dataframe(df_scan.sort_values("Combined Score", ascending=False).reset_index(drop=True))
+
+                st.markdown("### 🔝 Top 10 by ML % Change")
+                st.dataframe(df_scan.sort_values("ML % Change", ascending=False).head(10).reset_index(drop=True))
+
+                st.markdown("### 🔝 Top 10 by MC Median % Change")
+                st.dataframe(df_scan.sort_values("MC Median % Change", ascending=False).head(10).reset_index(drop=True))
+
+                st.markdown("### 🔝 Top 10 by Combined Score")
+                st.dataframe(df_scan.sort_values("Combined Score", ascending=False).head(10).reset_index(drop=True))
 
 # --------------------------------------
 # Main App Logic
