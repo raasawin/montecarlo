@@ -278,7 +278,6 @@ M = n_simulations
 
 simulations = monte_carlo_simulation(S0, mu, sigma, T, N, M)
 
-st.line_chart(simulations)
 # Monte Carlo Stats
 final_prices = simulations[-1]
 mc_median = np.median(final_prices)
