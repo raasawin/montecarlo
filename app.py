@@ -2,8 +2,6 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import os
-import datetime
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
 from sklearn.metrics import mean_squared_error
@@ -12,14 +10,7 @@ from sklearn.utils import resample
 st.set_page_config(layout="wide", page_title="Stock Price Forecast (MC + ML)")
 
 # --------------------------------------
-# Create log directory (relative path)
-# --------------------------------------
-log_dir = "./log_trade"
-try:
-    os.makedirs(log_dir, exist_ok=True)
-except Exception as e:
-    st.error(f"Error creating directory: {e}")
-
+# Fetch stock data
 # --------------------------------------
 @st.cache_data(ttl=3600)
 def get_stock_data(ticker_symbol, period="1y"):
@@ -28,6 +19,9 @@ def get_stock_data(ticker_symbol, period="1y"):
     data.dropna(inplace=True)
     return data
 
+# --------------------------------------
+# Fetch S&P 500 tickers from Wikipedia
+# --------------------------------------
 @st.cache_data(ttl=86400)
 def get_sp500_tickers():
     url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
@@ -35,11 +29,15 @@ def get_sp500_tickers():
     df = tables[0]
     return df['Symbol'].tolist()
 
+# --------------------------------------
+# Technical indicators (ALL added)
+# --------------------------------------
 def add_technical_indicators(df):
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
     df['Momentum'] = df['Close'].diff(4)
     df['Volatility'] = df['Close'].rolling(window=20).std()
     df['Volume_Change'] = df['Volume'].pct_change()
+    # Added indicators:
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
     df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
     df['RSI_14'] = compute_rsi(df['Close'], 14)
@@ -66,6 +64,9 @@ def compute_macd_signal(series, span_short=12, span_long=26, span_signal=9):
     macd_signal = macd.ewm(span=span_signal, adjust=False).mean()
     return macd_signal
 
+# --------------------------------------
+# Monte Carlo Simulation
+# --------------------------------------
 def monte_carlo_simulation(S0, mu, sigma, T, N, M):
     dt = T / N
     simulations = np.zeros((N, M))
@@ -78,8 +79,11 @@ def monte_carlo_simulation(S0, mu, sigma, T, N, M):
         simulations[:, i] = prices
     return simulations
 
+# --------------------------------------
+# ML Model
+# --------------------------------------
 def train_random_forest(df, n_days_ahead, eps, bootstrap_iters=1000, use_gridsearch=False, use_bootstrap=False, progress_bar=None):
-    df['EPS'] = eps
+    df['EPS'] = eps  # Add EPS as a constant feature
     df['Target'] = df['Close'].shift(-n_days_ahead)
     df = df.dropna()
 
@@ -110,6 +114,7 @@ def train_random_forest(df, n_days_ahead, eps, bootstrap_iters=1000, use_gridsea
 
     y_pred = best_model.predict(X_test)
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+
     latest_features = X.iloc[[-1]]
     predicted_price = best_model.predict(latest_features)[0]
 
@@ -123,104 +128,11 @@ def train_random_forest(df, n_days_ahead, eps, bootstrap_iters=1000, use_gridsea
             boot_preds.append(rf.predict(latest_features)[0])
             if i % max(1, bootstrap_iters // 100) == 0:
                 progress_bar.progress(min(i / bootstrap_iters, 1.0))
+
         ci_lower = np.percentile(boot_preds, 2.5)
         ci_upper = np.percentile(boot_preds, 97.5)
 
     return best_model, rmse, predicted_price, y_test.values[-1], ci_lower, ci_upper, best_params
-
-# Renamed to avoid conflict with checkbox variable 'log_trades'
-def log_trade_entry(ticker, entry_price, predicted_price, stop_loss, target_price, position_size):
-    date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    filename = os.path.join(log_dir, "trades.csv")
-    entry = {
-        "Time": date,
-        "Ticker": ticker,
-        "Entry Price": entry_price,
-        "Predicted Price": predicted_price,
-        "Stop Price": stop_loss,
-        "Target Price": target_price,
-        "Position Size": position_size
-    }
-    df_entry = pd.DataFrame([entry])
-    if os.path.exists(filename):
-        df_entry.to_csv(filename, mode='a', header=False, index=False)
-    else:
-        df_entry.to_csv(filename, index=False)
-
-# -------------------------
-# New: Automated ML Backtest Function
-# -------------------------
-def ml_backtest(df, n_days_ahead, eps, capital, risk_pct, rr_ratio):
-    df = df.copy()
-    df['EPS'] = eps
-    df['Target'] = df['Close'].shift(-n_days_ahead)
-    df = add_technical_indicators(df)
-    df.dropna(inplace=True)
-
-    features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS',
-                'SMA_50', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal']
-
-    # Store trade results here
-    trades = []
-
-    # Walk-forward backtest with expanding train set:
-    for i in range(100, len(df) - n_days_ahead):
-        train_df = df.iloc[:i]
-        test_df = df.iloc[i:i+1]
-        
-        X_train = train_df[features]
-        y_train = train_df['Target']
-        
-        # Skip if not enough training data
-        if len(X_train) < 20:
-            continue
-        
-        model = RandomForestRegressor(n_estimators=100, random_state=0)
-        model.fit(X_train, y_train)
-
-        X_test = test_df[features]
-        predicted_price = model.predict(X_test)[0]
-        entry_price = test_df['Close'].values[0]
-        true_future_price = df['Close'].iloc[i + n_days_ahead]  # Real future price at prediction horizon
-        
-        # Trading logic:
-        # Only enter trade if predicted price > entry_price (expecting gain)
-        if predicted_price > entry_price:
-            # Stop loss 5% below entry
-            stop_loss = entry_price * 0.95
-            # Target price based on RR ratio
-            target_price = entry_price + rr_ratio * (entry_price - stop_loss)
-            
-            # Position size shares based on risk_pct of capital
-            position_size = int((capital * risk_pct) / (entry_price - stop_loss)) if (entry_price - stop_loss) != 0 else 0
-            
-            # Exit price: simulate selling at true_future_price
-            exit_price = true_future_price
-            
-            pl_pct = 100 * (exit_price - entry_price) / entry_price
-            
-            trades.append({
-                "Entry Time": train_df.index[-1].strftime('%Y-%m-%d'),
-                "Entry Price": entry_price,
-                "Predicted Price": predicted_price,
-                "Exit Price": exit_price,
-                "Stop Loss": stop_loss,
-                "Target Price": target_price,
-                "Position Size": position_size,
-                "P/L %": pl_pct,
-                "Trade Result": "Win" if pl_pct > 0 else "Loss"
-            })
-
-    if not trades:
-        return None
-
-    trades_df = pd.DataFrame(trades)
-    win_rate = trades_df[trades_df["P/L %"] > 0].shape[0] / len(trades_df) * 100
-    avg_return = trades_df["P/L %"].mean()
-    total_return = (trades_df["P/L %"] / 100 + 1).prod() - 1
-    total_return_pct = total_return * 100
-
-    return trades_df, win_rate, avg_return, total_return_pct
 
 # --------------------------------------
 # Sidebar Inputs
@@ -240,168 +152,192 @@ if use_manual_price:
     manual_price = st.sidebar.number_input("Enter Latest Close Price", min_value=0.0, value=150.0, step=0.1)
 
 eps = st.sidebar.number_input("Enter EPS (Earnings Per Share)", min_value=0.01, value=5.0, step=0.01)
-capital = st.sidebar.number_input("Trading Capital ($)", min_value=100.0, value=10000.0, step=100.0)
-risk_pct = st.sidebar.slider("Risk per Trade (%)", min_value=0.1, max_value=10.0, value=1.0, step=0.1) / 100.0
-account_balance = st.sidebar.number_input("Account Balance ($)", min_value=100.0, value=10000.0, step=100.0)
-risk_per_trade = st.sidebar.slider("Risk per Trade (%)", min_value=0.5, max_value=10.0, value=2.0, step=0.5)
-rr_ratio = st.sidebar.slider("Risk-Reward Ratio", min_value=1.0, max_value=5.0, value=2.0, step=0.5)
 
-log_trades = st.sidebar.checkbox("Log Trades", value=True)
+# ---------------------------
+# Run S&P 500 Scanner Button
+# ---------------------------
+if st.sidebar.button("Run S&P 500 Scanner"):
+    with st.spinner("Running scanner on S&P 500..."):
+        sp500_tickers = get_sp500_tickers()
+        results = []
+        progress_bar = st.progress(0)
+        total = len(sp500_tickers)
+
+        for i, scan_ticker in enumerate(sp500_tickers):
+            try:
+                df_scan = get_stock_data(scan_ticker, period)
+                df_scan = add_technical_indicators(df_scan)
+
+                if df_scan.empty or len(df_scan) < 60:
+                    continue
+
+                latest_close = df_scan['Close'].iloc[-1]
+                log_returns = np.log(df_scan['Close'] / df_scan['Close'].shift(1)).dropna()
+                mu, sigma = log_returns.mean(), log_returns.std()
+
+                pe_ratio = latest_close / eps if eps > 0 else np.nan
+                baseline_pe = 20.0
+                adjusted_mu = mu * (baseline_pe / pe_ratio) if pe_ratio > 0 else mu
+
+                sim_data = monte_carlo_simulation(S0=latest_close, mu=adjusted_mu, sigma=sigma, T=n_days, N=n_days, M=n_simulations)
+                final_prices = sim_data[-1, :]
+                mc_p50 = np.percentile(final_prices, 50)
+                mc_change_pct = (mc_p50 - latest_close) / latest_close * 100
+
+                model_scan, _, predicted_price, _, _, _, _ = train_random_forest(
+                    df_scan, n_days, eps,
+                    bootstrap_iters=100,
+                    use_gridsearch=False,
+                    use_bootstrap=False,
+                    progress_bar=None
+                )
+                ml_change_pct = (predicted_price - latest_close) / latest_close * 100
+
+                results.append({
+                    'Ticker': scan_ticker,
+                    'ML % Increase': ml_change_pct,
+                    'MC Median % Increase': mc_change_pct
+                })
+            except Exception:
+                continue
+            progress_bar.progress((i + 1) / total)
+
+        if results:
+            results_df = pd.DataFrame(results)
+            results_df.sort_values(by='ML % Increase', ascending=False, inplace=True)
+            st.subheader("S&P 500 Scanner Results (Ranked by ML % Increase)")
+            st.dataframe(results_df.style.format({"ML % Increase": "{:.2f}%", "MC Median % Increase": "{:.2f}%"}))
+        else:
+            st.warning("No results to display.")
 
 # --------------------------------------
 # Main App Logic
 # --------------------------------------
-st.title("Stock Price Forecast with Monte Carlo & Random Forest ML")
+st.title(f"📈 Forecasting Stock Price: {ticker.upper()}")
 
-# Fetch Data
 try:
     df = get_stock_data(ticker, period)
-except Exception as e:
-    st.error(f"Failed to download data for {ticker}: {e}")
-    st.stop()
+    df = add_technical_indicators(df)
 
-df = add_technical_indicators(df)
+    if use_manual_price and manual_price is not None:
+        df.iloc[-1, df.columns.get_loc("Close")] = manual_price
+        df = add_technical_indicators(df)  # Recalculate indicators after price change
 
-# Display latest data
-st.subheader(f"{ticker} Historical Price Data")
-st.write(df.tail())
+    df.dropna(inplace=True)
 
-# Monte Carlo Simulation
-st.subheader("Monte Carlo Price Simulation")
+    latest_close = df['Close'].iloc[-1]
+    log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
+    mu, sigma = log_returns.mean(), log_returns.std()
 
-S0 = manual_price if use_manual_price and manual_price else df['Close'][-1]
-mu = df['Close'].pct_change().mean()
-sigma = df['Close'].pct_change().std()
-T = n_days / 252  # trading days fraction
-N = n_days
-M = n_simulations
+    pe_ratio = latest_close / eps if eps > 0 else np.nan
+    baseline_pe = 20.0
+    adjusted_mu = mu * (baseline_pe / pe_ratio) if pe_ratio > 0 else mu
 
-simulations = monte_carlo_simulation(S0, mu, sigma, T, N, M)
+    sim_data = monte_carlo_simulation(S0=latest_close, mu=adjusted_mu, sigma=sigma, T=n_days, N=n_days, M=n_simulations)
+    final_prices = sim_data[-1, :]
+    p5 = np.percentile(final_prices, 5)
+    p50 = np.percentile(final_prices, 50)
+    p95 = np.percentile(final_prices, 95)
 
-# Monte Carlo Stats
-final_prices = simulations[-1]
-mc_median = np.median(final_prices)
-mc_5th = np.percentile(final_prices, 5)
-mc_95th = np.percentile(final_prices, 95)
+    st.subheader("Monte Carlo Simulation Results")
+    st.write(f"**5th percentile price**: ${p5:.2f} ({(p5 - latest_close)/latest_close:.2%})")
+    st.write(f"**Median price**: ${p50:.2f} ({(p50 - latest_close)/latest_close:.2%})")
+    st.write(f"**95th percentile price**: ${p95:.2f} ({(p95 - latest_close)/latest_close:.2%})")
 
-mc_change_pct = ((mc_median - S0) / S0) * 100
+    progress_bar = st.progress(0)
 
-st.write(f"**Monte Carlo Median Price:** ${mc_median:.2f}")
-st.write(f"**5th Percentile Price:** ${mc_5th:.2f}")
-st.write(f"**95th Percentile Price:** ${mc_95th:.2f}")
-st.write(f"**Predicted % Change (Median):** {mc_change_pct:.2f}%")
+    model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(
+        df, n_days, eps,
+        bootstrap_iters=1000,
+        use_gridsearch=use_gridsearch,
+        use_bootstrap=use_bootstrap,
+        progress_bar=progress_bar
+    )
 
-# ML Model Training & Prediction
-st.subheader("Random Forest Regression Model")
+    ml_change_pct = (predicted_price - latest_close) / latest_close * 100
 
-progress_bar = st.progress(0) if use_bootstrap else None
+    st.subheader(f"Machine Learning Prediction ({n_days}-Day Close)")
+    st.write(f"**Predicted Price**: ${predicted_price:.2f}")
+    if ci_lower is not None and ci_upper is not None:
+        st.write(f"**95% Prediction Interval**: ${ci_lower:.2f} to ${ci_upper:.2f}")
+    st.write(f"**Actual Price (last test sample)**: ${actual_price:.2f}")
+    st.write(f"**RMSE**: ${rmse:.2f}")
+    st.write(f"**Expected Price Change**: {ml_change_pct:+.2f}%")
+    st.write(f"**Best Model Parameters**: `{best_params}`")
 
-try:
-    model, rmse, predicted_price, latest_close, ci_lower, ci_upper, best_params = train_random_forest(
-        df, n_days, eps, bootstrap_iters=500 if use_bootstrap else 0,
-        use_gridsearch=use_gridsearch, use_bootstrap=use_bootstrap, progress_bar=progress_bar)
-except Exception as e:
-    st.error(f"Model training failed: {e}")
-    st.stop()
-
-st.write(f"RMSE on Test Set: {rmse:.2f}")
-st.write(f"Latest Actual Close Price: ${latest_close:.2f}")
-st.write(f"Predicted Price in {n_days} days: ${predicted_price:.2f}")
-ml_pct_change = ((predicted_price - latest_close) / latest_close) * 100
-st.write(f"**Predicted % Change (ML):** {ml_pct_change:.2f}%")
-if ci_lower and ci_upper:
-    st.write(f"95% Prediction Interval: ${ci_lower:.2f} - ${ci_upper:.2f}")
-st.write(f"Best Model Parameters: {best_params}")
-
-# Trade Logging Inputs
-if log_trades:
-    position_size = int((capital * risk_pct) / (S0 * 0.05)) if S0 * 0.05 != 0 else 0
-    stop_loss = S0 * 0.95
-    target_price = S0 + rr_ratio * (S0 - stop_loss)
-    if st.button("Log Trade"):
-        log_trade_entry(ticker, S0, predicted_price, stop_loss, target_price, position_size)
-        st.success("Trade logged successfully.")
-
-# --------------------------------------
-# New Backtesting Section
-# --------------------------------------
-st.subheader("Backtest ML Trading Strategy")
-
-if st.button("Run Backtest"):
-    with st.spinner("Running backtest... this may take some time"):
-        result = ml_backtest(df, n_days, eps, capital, risk_pct, rr_ratio)
-    if result is None:
-        st.warning("Not enough data to run backtest or no trades generated.")
+    st.markdown("---")
+    st.subheader("📊 Final Summary")
+    if ml_change_pct > 1 and p50 > latest_close:
+        st.success(f"**Likely Upward Trend** — ML: ~{ml_change_pct:.2f}%, MC: {(p50 - latest_close)/latest_close:.2%}")
+    elif ml_change_pct < -1 and p50 < latest_close:
+        st.error(f"**Likely Downward Trend** — ML: ~{ml_change_pct:.2f}%, MC: {(p50 - latest_close)/latest_close:.2%}")
     else:
-        trades_df, win_rate, avg_return, total_return_pct = result
-        st.write("Backtest Trades:")
-        st.dataframe(trades_df)
-        st.markdown(f"**Win Rate:** {win_rate:.2f}%")
-        st.markdown(f"**Average Return per Trade:** {avg_return:.2f}%")
-        st.markdown(f"**Total Cumulative Return:** {total_return_pct:.2f}%")
+        st.warning("**Uncertain** — Mixed or flat predictions. Use caution.")
 
-        # Summary plot
-        st.line_chart((trades_df["P/L %"]/100 + 1).cumprod())
+except Exception as e:
+    st.error(f"Error loading data or running simulation: {e}")
 
-# --------------------------------------
-# Display logged trades if any
-# --------------------------------------
-st.subheader("Logged Trades History")
-trade_log_path = os.path.join(log_dir, "trades.csv")
-if os.path.exists(trade_log_path):
-    try:
-        trade_log_df = pd.read_csv(trade_log_path)
-        st.dataframe(trade_log_df)
-    except Exception as e:
-        st.error(f"Error reading trade log: {e}")
-else:
-    st.info("No trade logs found.")
-# -------------------------
-# Enhanced S&P 500 Scanner
-# -------------------------
-st.subheader("S&P 500 Scanner (ML & Monte Carlo Predictions)")
+import plotly.graph_objects as go
+from sklearn.metrics import mean_absolute_error, r2_score
 
-if st.button("Scan All S&P 500 Stocks"):
-    with st.spinner("Running full scan across all 500 stocks..."):
-        tickers = get_sp500_tickers()
-        scan_results = []
+# Sidebar toggle for backtesting
+run_backtest = st.sidebar.checkbox("Run Backtest on Test Set", value=False)
 
-        for t in tickers:
-            try:
-                df_scan = get_stock_data(t, period)
-                if df_scan.empty or len(df_scan) < 100:
-                    continue
-                df_scan = add_technical_indicators(df_scan)
-                latest_close_scan = df_scan["Close"].iloc[-1]
+def backtest_model_performance(y_true, y_pred):
+    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
+    mae = mean_absolute_error(y_true, y_pred)
+    r2 = r2_score(y_true, y_pred)
+    residuals = y_true - y_pred
 
-                # ML Model
-                _, _, pred_price_ml, _, _, _, _ = train_random_forest(
-                    df_scan, n_days, eps,
-                    bootstrap_iters=0,
-                    use_gridsearch=False,
-                    use_bootstrap=False
-                )
-                ml_pct = 100 * (pred_price_ml - latest_close_scan) / latest_close_scan
+    st.subheader("📊 Backtest Results")
 
-                # Monte Carlo Model
-                mu = df_scan['Close'].pct_change().mean()
-                sigma = df_scan['Close'].pct_change().std()
-                S0 = latest_close_scan
-                T = n_days / 252
-                simulations = monte_carlo_simulation(S0, mu, sigma, T, n_days, M=500)
-                mc_median = np.median(simulations[-1])
-                mc_pct = 100 * (mc_median - S0) / S0
+    # Metrics summary
+    metrics_df = pd.DataFrame({
+        "Metric": ["RMSE", "MAE", "R² Score"],
+        "Value": [rmse, mae, r2]
+    })
+    st.table(metrics_df.style.format({"Value": "{:.4f}"}))
 
-                scan_results.append((t, latest_close_scan, pred_price_ml, ml_pct, mc_median, mc_pct))
+    # Predicted vs Actual line plot
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(y=y_true, mode='lines', name='Actual Price'))
+    fig.add_trace(go.Scatter(y=y_pred, mode='lines', name='Predicted Price'))
+    fig.update_layout(
+        title="Actual vs Predicted Stock Price",
+        xaxis_title="Test Sample Index",
+        yaxis_title="Price",
+        legend=dict(x=0, y=1)
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-            except Exception:
-                continue
+    # Residuals histogram
+    fig2 = go.Figure()
+    fig2.add_trace(go.Histogram(x=residuals, nbinsx=30))
+    fig2.update_layout(
+        title="Prediction Residuals Histogram",
+        xaxis_title="Residual (Actual - Predicted)",
+        yaxis_title="Frequency"
+    )
+    st.plotly_chart(fig2, use_container_width=True)
 
-        df_results = pd.DataFrame(scan_results, columns=[
-            "Ticker", "Current Price", "ML Predicted Price", "ML % Change",
-            "MC Median Price", "MC % Change"
-        ])
-        df_results = df_results.sort_values("ML % Change", ascending=False).reset_index(drop=True)
+# --- Insert after your model training and prediction code ---
 
-        st.write("🔝 Top ML Forecasted Stocks in S&P 500:")
-        st.dataframe(df_results.head(20))
+# Prepare test features and true values for backtesting
+features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS',
+            'SMA_50', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal']
+
+df['EPS'] = eps
+df['Target'] = df['Close'].shift(-n_days)
+df.dropna(inplace=True)
+
+X = df[features]
+y = df['Target']
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
+
+# Generate predictions on test set
+y_pred = model.predict(X_test)
+
+# Display backtest if toggled
+if run_backtest:
+    backtest_model_performance(y_test, y_pred)
