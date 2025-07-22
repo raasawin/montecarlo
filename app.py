@@ -1,4 +1,3 @@
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -129,16 +128,18 @@ def train_random_forest(df, n_days_ahead, eps, bootstrap_iters=1000, use_gridsea
 
     return best_model, rmse, predicted_price, y_test.values[-1], ci_lower, ci_upper, best_params
 
-def log_trade(ticker, entry_price, stop_loss, target_price, predicted_price, log_dir):
+# Renamed to avoid conflict with checkbox variable 'log_trades'
+def log_trade_entry(ticker, entry_price, predicted_price, stop_loss, target_price, position_size):
     date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    filename = os.path.join(log_dir, f"{ticker}_log.csv")
+    filename = os.path.join(log_dir, "trades.csv")
     entry = {
         "Time": date,
         "Ticker": ticker,
-        "Entry": entry_price,
-        "Stop": stop_loss,
-        "Target": target_price,
-        "Prediction": predicted_price
+        "Entry Price": entry_price,
+        "Predicted Price": predicted_price,
+        "Stop Price": stop_loss,
+        "Target Price": target_price,
+        "Position Size": position_size
     }
     df_entry = pd.DataFrame([entry])
     if os.path.exists(filename):
@@ -146,7 +147,6 @@ def log_trade(ticker, entry_price, stop_loss, target_price, predicted_price, log
     else:
         df_entry.to_csv(filename, index=False)
 
-# Sidebar and app logic would follow after this...
 # --------------------------------------
 # Sidebar Inputs
 # --------------------------------------
@@ -179,106 +179,104 @@ if log_trades:
         os.makedirs("./log_trade", exist_ok=True)
     except Exception as e:
         st.error(f"Failed to create log directory: {e}")
-# --------------------------------------
-# Main App Logic
-# --------------------------------------
-st.title(f"📈 Forecasting Stock Price: {ticker.upper()}")
 
+# --------------------------------------
+# Main Logic
+# --------------------------------------
 try:
-    df = get_stock_data(ticker, period)
+    df = get_stock_data(ticker, period=period)
+    if df.empty:
+        st.error(f"No data found for ticker {ticker} with period {period}.")
+        st.stop()
+
     df = add_technical_indicators(df)
-
-    if use_manual_price and manual_price is not None:
-        df.iloc[-1, df.columns.get_loc("Close")] = manual_price
-        df = add_technical_indicators(df)  # Recalculate indicators
-
     df.dropna(inplace=True)
 
-    latest_close = df['Close'].iloc[-1]
-    log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
-    mu, sigma = log_returns.mean(), log_returns.std()
+    if use_manual_price and manual_price is not None:
+        latest_close = manual_price
+    else:
+        latest_close = df['Close'][-1]
 
-    pe_ratio = latest_close / eps if eps > 0 else np.nan
-    baseline_pe = 20.0
-    adjusted_mu = mu * (baseline_pe / pe_ratio) if pe_ratio > 0 else mu
+    # Calculate daily returns mean and std dev for MC
+    daily_returns = df['Close'].pct_change().dropna()
+    mu = daily_returns.mean()
+    sigma = daily_returns.std()
 
-    sim_data = monte_carlo_simulation(S0=latest_close, mu=adjusted_mu, sigma=sigma, T=n_days, N=n_days, M=n_simulations)
-    final_prices = sim_data[-1, :]
-    p5 = np.percentile(final_prices, 5)
-    p50 = np.percentile(final_prices, 50)
-    p95 = np.percentile(final_prices, 95)
+    # Monte Carlo simulation
+    sims = monte_carlo_simulation(S0=latest_close, mu=mu, sigma=sigma, T=n_days/252, N=n_days, M=n_simulations)
+    p50 = np.percentile(sims[-1, :], 50)
+    p5 = np.percentile(sims[-1, :], 5)
+    p95 = np.percentile(sims[-1, :], 95)
 
-    st.subheader("Monte Carlo Simulation Results")
-    st.write(f"**5th percentile price**: ${p5:.2f} ({(p5 - latest_close)/latest_close:.2%})")
-    st.write(f"**Median price**: ${p50:.2f} ({(p50 - latest_close)/latest_close:.2%})")
-    st.write(f"**95th percentile price**: ${p95:.2f} ({(p95 - latest_close)/latest_close:.2%})")
+    st.header(f"{ticker} Stock Price Forecast")
+    st.write(f"Latest Close Price: ${latest_close:.2f}")
+    st.write(f"Monte Carlo 50th Percentile Price in {n_days} days: ${p50:.2f}")
+    st.write(f"Monte Carlo 5th Percentile Price in {n_days} days: ${p5:.2f}")
+    st.write(f"Monte Carlo 95th Percentile Price in {n_days} days: ${p95:.2f}")
 
-    progress_bar = st.progress(0)
+    progress_bar = st.progress(0) if use_bootstrap else None
 
-    model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(
+    rf_model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(
         df, n_days, eps,
-        bootstrap_iters=1000,
+        bootstrap_iters=100 if use_bootstrap else 0,
         use_gridsearch=use_gridsearch,
         use_bootstrap=use_bootstrap,
         progress_bar=progress_bar
     )
 
-    ml_change_pct = (predicted_price - latest_close) / latest_close * 100
+    st.subheader("Random Forest Model")
+    st.write(f"RMSE: {rmse:.4f}")
+    st.write(f"Predicted Price in {n_days} days: ${predicted_price:.2f}")
+    if ci_lower and ci_upper:
+        st.write(f"95% Confidence Interval: (${ci_lower:.2f}, ${ci_upper:.2f})")
+    st.write(f"Best Params: {best_params}")
 
-    st.subheader(f"Machine Learning Prediction ({n_days}-Day Close)")
-    st.write(f"**Predicted Price**: ${predicted_price:.2f}")
-    if ci_lower is not None and ci_upper is not None:
-        st.write(f"**95% Prediction Interval**: ${ci_lower:.2f} to ${ci_upper:.2f}")
-    st.write(f"**Actual Price (last test sample)**: ${actual_price:.2f}")
-    st.write(f"**RMSE**: ${rmse:.2f}")
-    st.write(f"**Expected Price Change**: {ml_change_pct:+.2f}%")
-    st.write(f"**Best Model Parameters**: `{best_params}`")
-    st.markdown("---")
-    st.subheader("📊 Final Summary")
+    # Calculate % change from latest close
+    ml_change_pct = ((predicted_price - latest_close) / latest_close) * 100
 
-    position_size = capital * risk_pct / (latest_close * 0.05)  # Assume 5% stop range if CI unavailable
-    stop_price = ci_lower if ci_lower is not None else p5
-    target_price = ci_upper if ci_upper is not None else p95
+    st.subheader("Trade Management")
+    position_size = (capital * risk_pct) / (latest_close * risk_pct)
+    stop_price = latest_close * (1 - risk_pct)
+    target_price = latest_close * (1 + risk_pct * rr_ratio)
 
-    stop_loss_pct = (stop_price - latest_close) / latest_close if stop_price else -0.05
-    take_profit_pct = (target_price - latest_close) / latest_close if target_price else 0.1
+    st.write(f"Position Size (shares): {position_size:.2f}")
+    st.write(f"Stop Loss Price: ${stop_price:.2f}")
+    st.write(f"Take Profit Price: ${target_price:.2f}")
 
-    position_size = max(0, position_size)
-    stop_price = round(stop_price, 2) if stop_price else None
-    target_price = round(target_price, 2) if target_price else None
-
+    # Trade signals and logging
     if ml_change_pct > 1 and p50 > latest_close:
         st.success(f"**Likely Upward Trend** — ML: ~{ml_change_pct:.2f}%, MC: {(p50 - latest_close)/latest_close:.2%}")
-        if log_trade:
-            log_trade(ticker, latest_close, predicted_price, stop_price, target_price, position_size)
+        if log_trades:
+            log_trade_entry(ticker, latest_close, predicted_price, stop_price, target_price, position_size)
     elif ml_change_pct < -1 and p50 < latest_close:
         st.error(f"**Likely Downward Trend** — ML: ~{ml_change_pct:.2f}%, MC: {(p50 - latest_close)/latest_close:.2%}")
     else:
         st.warning("**Uncertain** — Mixed or flat predictions. Use caution.")
 
-    st.markdown("---")
-    st.subheader("💼 Trade Management")
-    st.write(f"**Capital**: ${capital:,.2f}")
-    st.write(f"**Position Size Estimate**: {int(position_size)} shares")
-    st.write(f"**Stop-Loss Price**: ${stop_price}")
-    st.write(f"**Take-Profit Price**: ${target_price}")
+except Exception as e:
+    st.error(f"Error: {e}")
 
-    # Backtest Log Viewer
-    if log_trade:
-        try:
-            log_df = pd.read_csv(os.path.join(log_dir, "trades.csv"))
+# -----------------------------
+# Backtest Log Viewer
+# -----------------------------
+if log_trades:
+    try:
+        log_path = os.path.join(log_dir, "trades.csv")
+        if os.path.exists(log_path):
+            log_df = pd.read_csv(log_path)
             st.subheader("🧾 Trade Log")
             st.dataframe(log_df.tail(10))
 
-            log_df['PL %'] = ((log_df['Exit Price'] - log_df['Entry Price']) / log_df['Entry Price']) * 100
-            win_rate = (log_df['PL %'] > 0).mean() * 100
-            avg_return = log_df['PL %'].mean()
-            st.markdown(f"**Backtest Summary**")
-            st.write(f"**Win Rate**: {win_rate:.2f}%")
-            st.write(f"**Average Return per Trade**: {avg_return:.2f}%")
-
-        except Exception as e:
-            st.warning(f"Could not load trade log: {e}")
-
-except Exception as e:
-    st.error(f"Error loading data or running simulation: {e}")
+            if 'Exit Price' in log_df.columns:
+                log_df['PL %'] = ((log_df['Exit Price'] - log_df['Entry Price']) / log_df['Entry Price']) * 100
+                win_rate = (log_df['PL %'] > 0).mean() * 100
+                avg_return = log_df['PL %'].mean()
+                st.markdown(f"**Backtest Summary**")
+                st.write(f"**Win Rate**: {win_rate:.2f}%")
+                st.write(f"**Average Return per Trade**: {avg_return:.2f}%")
+            else:
+                st.info("Trade log has no 'Exit Price' column yet. P/L calculation not available.")
+        else:
+            st.info("No trade log found yet.")
+    except Exception as e:
+        st.warning(f"Could not load trade log: {e}")
