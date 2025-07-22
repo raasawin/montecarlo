@@ -231,6 +231,7 @@ try:
     st.subheader("Random Forest Model")
     st.write(f"RMSE: {rmse:.4f}")
     st.write(f"Predicted Price in {n_days} days: ${predicted_price:.2f}")
+    ml_change_pct = (predicted_price - latest_close) / latest_close * 100
     st.write(f"Predicted % Change in {n_days} days: {ml_change_pct:.2f}%")
     if ci_lower and ci_upper:
         st.write(f"95% Confidence Interval: (${ci_lower:.2f}, ${ci_upper:.2f})")
