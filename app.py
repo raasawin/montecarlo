@@ -249,7 +249,7 @@ try:
 
     if ml_change_pct > 1 and p50 > latest_close:
         st.success(f"**Likely Upward Trend** — ML: ~{ml_change_pct:.2f}%, MC: {(p50 - latest_close)/latest_close:.2%}")
-        if trade_logging:
+        if log_trade:
             log_trade(ticker, latest_close, predicted_price, stop_price, target_price, position_size)
     elif ml_change_pct < -1 and p50 < latest_close:
         st.error(f"**Likely Downward Trend** — ML: ~{ml_change_pct:.2f}%, MC: {(p50 - latest_close)/latest_close:.2%}")
@@ -264,7 +264,7 @@ try:
     st.write(f"**Take-Profit Price**: ${target_price}")
 
     # Backtest Log Viewer
-    if trade_logging:
+    if log_trade:
         try:
             log_df = pd.read_csv(os.path.join(log_dir, "trades.csv"))
             st.subheader("🧾 Trade Log")
