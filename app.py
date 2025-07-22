@@ -8,6 +8,69 @@ from sklearn.metrics import mean_squared_error
 from sklearn.utils import resample
 
 st.set_page_config(layout="wide", page_title="Stock Price Forecast (MC + ML)")
+# -------------------------
+# ML Walk-Forward Backtest
+# -------------------------
+def ml_backtest(df, n_days_ahead, eps, capital, risk_pct, rr_ratio):
+    df = df.copy()
+    df['EPS'] = eps
+    df['Target'] = df['Close'].shift(-n_days_ahead)
+    df = add_technical_indicators(df)
+    df.dropna(inplace=True)
+
+    features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS',
+                'SMA_50', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal']
+
+    trades = []
+
+    for i in range(100, len(df) - n_days_ahead):
+        train_df = df.iloc[:i]
+        test_df = df.iloc[i:i+1]
+        
+        X_train = train_df[features]
+        y_train = train_df['Target']
+        
+        if len(X_train) < 20:
+            continue
+        
+        model = RandomForestRegressor(n_estimators=100, random_state=0)
+        model.fit(X_train, y_train)
+
+        X_test = test_df[features]
+        predicted_price = model.predict(X_test)[0]
+        entry_price = test_df['Close'].values[0]
+        true_future_price = df['Close'].iloc[i + n_days_ahead]
+        
+        if predicted_price > entry_price:
+            stop_loss = entry_price * 0.95
+            target_price = entry_price + rr_ratio * (entry_price - stop_loss)
+            risk_per_share = entry_price - stop_loss
+            position_size = int((capital * risk_pct) / risk_per_share) if risk_per_share != 0 else 0
+            exit_price = true_future_price
+            pl_pct = 100 * (exit_price - entry_price) / entry_price
+
+            trades.append({
+                "Entry Time": train_df.index[-1].strftime('%Y-%m-%d'),
+                "Entry Price": entry_price,
+                "Predicted Price": predicted_price,
+                "Exit Price": exit_price,
+                "Stop Loss": stop_loss,
+                "Target Price": target_price,
+                "Position Size": position_size,
+                "P/L %": pl_pct,
+                "Trade Result": "Win" if pl_pct > 0 else "Loss"
+            })
+
+    if not trades:
+        return None
+
+    trades_df = pd.DataFrame(trades)
+    win_rate = trades_df[trades_df["P/L %"] > 0].shape[0] / len(trades_df) * 100
+    avg_return = trades_df["P/L %"].mean()
+    total_return = (trades_df["P/L %"] / 100 + 1).prod() - 1
+    total_return_pct = total_return * 100
+
+    return trades_df, win_rate, avg_return, total_return_pct
 
 # --------------------------------------
 # Fetch stock data
@@ -152,6 +215,10 @@ if use_manual_price:
     manual_price = st.sidebar.number_input("Enter Latest Close Price", min_value=0.0, value=150.0, step=0.1)
 
 eps = st.sidebar.number_input("Enter EPS (Earnings Per Share)", min_value=0.01, value=5.0, step=0.01)
+# Sidebar Inputs for Backtesting
+capital = st.sidebar.number_input("Backtest Capital ($)", min_value=100.0, value=10000.0, step=100.0)
+risk_pct = st.sidebar.slider("Backtest Risk per Trade (%)", min_value=0.1, max_value=10.0, value=1.0, step=0.1) / 100.0
+rr_ratio = st.sidebar.slider("Backtest Risk-Reward Ratio", min_value=1.0, max_value=5.0, value=2.0, step=0.5)
 
 # ---------------------------
 # Run S&P 500 Scanner Button
@@ -341,3 +408,27 @@ y_pred = model.predict(X_test)
 # Display backtest if toggled
 if run_backtest:
     backtest_model_performance(y_test, y_pred)
+
+# --------------------------------------
+# ML Strategy Backtesting Section
+# --------------------------------------
+st.subheader("🔄 ML Strategy Backtest (Walk-Forward)")
+
+if st.button("Run ML Backtest"):
+    with st.spinner("Running ML backtest... please wait..."):
+        result = ml_backtest(df, n_days, eps, capital, risk_pct, rr_ratio)
+
+    if result is None:
+        st.warning("No trades were generated during backtest (or not enough data).")
+    else:
+        trades_df, win_rate, avg_return, total_return_pct = result
+        st.write("Trade History:")
+        st.dataframe(trades_df)
+
+        st.markdown(f"**Win Rate:** `{win_rate:.2f}%`")
+        st.markdown(f"**Avg Return per Trade:** `{avg_return:.2f}%`")
+        st.markdown(f"**Total Return (Cumulative):** `{total_return_pct:.2f}%`")
+
+        # Equity curve
+        st.line_chart((trades_df["P/L %"] / 100 + 1).cumprod())
+
