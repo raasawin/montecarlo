@@ -213,6 +213,10 @@ try:
     st.write(f"Monte Carlo 50th Percentile Price in {n_days} days: ${p50:.2f}")
     st.write(f"Monte Carlo 5th Percentile Price in {n_days} days: ${p5:.2f}")
     st.write(f"Monte Carlo 95th Percentile Price in {n_days} days: ${p95:.2f}")
+    mc_change_pct = (p50 - latest_close) / latest_close * 100
+    st.write(f"Predicted % Change (Monte Carlo median): {mc_change_pct:.2f}%")
+
+
 
     progress_bar = st.progress(0) if use_bootstrap else None
 
@@ -227,6 +231,7 @@ try:
     st.subheader("Random Forest Model")
     st.write(f"RMSE: {rmse:.4f}")
     st.write(f"Predicted Price in {n_days} days: ${predicted_price:.2f}")
+    st.write(f"Predicted % Change in {n_days} days: {ml_change_pct:.2f}%")
     if ci_lower and ci_upper:
         st.write(f"95% Confidence Interval: (${ci_lower:.2f}, ${ci_upper:.2f})")
     st.write(f"Best Params: {best_params}")
