@@ -176,7 +176,7 @@ log_trades = st.sidebar.checkbox("Log Trades & Backtest", value=True)
 # Create log directory
 if log_trades:
     try:
-        os.makedirs("./trade_logs", exist_ok=True)
+        os.makedirs("./log_trade", exist_ok=True)
     except Exception as e:
         st.error(f"Failed to create log directory: {e}")
 # --------------------------------------
