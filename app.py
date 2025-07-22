@@ -222,11 +222,13 @@ def get_sp500_tickers():
     return sp500_df['Symbol'].tolist()
 
 # --- Scanner Function ---
+# --- Scanner Function ---
 def run_scanner(tickers, period, n_simulations, n_days, eps, use_gridsearch, use_bootstrap):
     results = []
     progress_text = "Scanning tickers..."
     progress_bar = st.progress(0)
-    for i, tk in enumerate(tqdm(tickers, desc=progress_text)):
+    total = len(tickers)
+    for i, tk in enumerate(tickers):
         try:
             df = get_stock_data(tk, period)
             df = add_technical_indicators(df)
@@ -267,10 +269,10 @@ def run_scanner(tickers, period, n_simulations, n_days, eps, use_gridsearch, use
         except Exception as e:
             # Optionally log error somewhere
             continue
-        progress_bar.progress(min((i + 1) / len(tickers), 1.0))
+        
+        progress_bar.progress(min((i + 1) / total, 1.0))
 
     return pd.DataFrame(results)
-
 # --- Sidebar Scanner Options ---
 scan_sp500 = st.sidebar.checkbox("Run S&P 500 Scanner")
 
