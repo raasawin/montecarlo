@@ -227,4 +227,37 @@ def run_scanner(tickers, period, n_simulations, n_days, eps, use_gridsearch, use
             baseline_pe = 20.0
             adjusted_mu = mu * (baseline_pe / pe_ratio) if pe_ratio > 0 else mu
 
-            sim_data = monte_carlo_sim
+            sim_data = monte_carlo_simulation(
+                S0=latest_close, mu=adjusted_mu, sigma=sigma,
+                T=n_days, N=n_days, M=n_simulations
+            )
+            final_prices = sim_data[-1, :]
+            mc_p50 = np.percentile(final_prices, 50)
+
+            model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(
+                df, n_days, eps,
+                bootstrap_iters=100,
+                use_gridsearch=use_gridsearch,
+                use_bootstrap=use_bootstrap,
+                progress_bar=None
+            )
+
+            ml_change_pct = (predicted_price - latest_close) / latest_close * 100
+            mc_change_pct = (mc_p50 - latest_close) / latest_close * 100
+            combined_score = (ml_change_pct + mc_change_pct) / 2
+
+            results.append({
+                "Ticker": tk,
+                "Latest Close": latest_close,
+                "ML % Change": ml_change_pct,
+                "MC Median % Change": mc_change_pct,
+                "Combined Score": combined_score,
+                "RMSE": rmse
+            })
+
+        except Exception as e:
+            print(f"Skipping {tk}: {e}")
+
+        progress_bar.progress((i + 1) / total)
+
+    return pd.DataFrame(results)
