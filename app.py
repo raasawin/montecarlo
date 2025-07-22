@@ -20,32 +20,49 @@ def get_stock_data(ticker_symbol, period="1y"):
     return data
 
 # --------------------------------------
-# RSI Helper Function
+# Fetch S&P 500 tickers from Wikipedia
 # --------------------------------------
-def compute_rsi(series, window=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=window).mean()
-    avg_loss = loss.rolling(window=window).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+@st.cache_data(ttl=86400)
+def get_sp500_tickers():
+    url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+    tables = pd.read_html(url)
+    df = tables[0]
+    return df['Symbol'].tolist()
 
 # --------------------------------------
-# Technical indicators
+# Technical indicators (ALL added)
 # --------------------------------------
 def add_technical_indicators(df):
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
-    df['SMA_50'] = df['Close'].rolling(window=50).mean()
-    df['EMA_12'] = df['Close'].ewm(span=12, adjust=False).mean()
-    df['EMA_26'] = df['Close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = df['EMA_12'] - df['EMA_26']
-    df['RSI'] = compute_rsi(df['Close'], window=14)
     df['Momentum'] = df['Close'].diff(4)
     df['Volatility'] = df['Close'].rolling(window=20).std()
     df['Volume_Change'] = df['Volume'].pct_change()
+    # Added indicators:
+    df['SMA_50'] = df['Close'].rolling(window=50).mean()
+    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
+    df['RSI_14'] = compute_rsi(df['Close'], 14)
+    df['MACD'] = compute_macd(df['Close'])
+    df['MACD_Signal'] = compute_macd_signal(df['Close'])
     return df
+
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def compute_macd(series, span_short=12, span_long=26):
+    ema_short = series.ewm(span=span_short, adjust=False).mean()
+    ema_long = series.ewm(span=span_long, adjust=False).mean()
+    macd = ema_short - ema_long
+    return macd
+
+def compute_macd_signal(series, span_short=12, span_long=26, span_signal=9):
+    macd = compute_macd(series, span_short, span_long)
+    macd_signal = macd.ewm(span=span_signal, adjust=False).mean()
+    return macd_signal
 
 # --------------------------------------
 # Monte Carlo Simulation
@@ -70,10 +87,8 @@ def train_random_forest(df, n_days_ahead, eps, bootstrap_iters=1000, use_gridsea
     df['Target'] = df['Close'].shift(-n_days_ahead)
     df = df.dropna()
 
-    features = [
-        'Close', 'SMA_20', 'SMA_50', 'EMA_12', 'EMA_26', 'MACD', 'RSI',
-        'Momentum', 'Volatility', 'Volume_Change', 'EPS'
-    ]
+    features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS',
+                'SMA_50', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal']
     X = df[features]
     y = df['Target']
 
@@ -138,6 +153,63 @@ if use_manual_price:
 
 eps = st.sidebar.number_input("Enter EPS (Earnings Per Share)", min_value=0.01, value=5.0, step=0.01)
 
+# ---------------------------
+# Run S&P 500 Scanner Button
+# ---------------------------
+if st.sidebar.button("Run S&P 500 Scanner"):
+    with st.spinner("Running scanner on S&P 500..."):
+        sp500_tickers = get_sp500_tickers()
+        results = []
+        progress_bar = st.progress(0)
+        total = len(sp500_tickers)
+
+        for i, scan_ticker in enumerate(sp500_tickers):
+            try:
+                df_scan = get_stock_data(scan_ticker, period)
+                df_scan = add_technical_indicators(df_scan)
+
+                if df_scan.empty or len(df_scan) < 60:
+                    continue
+
+                latest_close = df_scan['Close'].iloc[-1]
+                log_returns = np.log(df_scan['Close'] / df_scan['Close'].shift(1)).dropna()
+                mu, sigma = log_returns.mean(), log_returns.std()
+
+                pe_ratio = latest_close / eps if eps > 0 else np.nan
+                baseline_pe = 20.0
+                adjusted_mu = mu * (baseline_pe / pe_ratio) if pe_ratio > 0 else mu
+
+                sim_data = monte_carlo_simulation(S0=latest_close, mu=adjusted_mu, sigma=sigma, T=n_days, N=n_days, M=n_simulations)
+                final_prices = sim_data[-1, :]
+                mc_p50 = np.percentile(final_prices, 50)
+                mc_change_pct = (mc_p50 - latest_close) / latest_close * 100
+
+                model_scan, _, predicted_price, _, _, _, _ = train_random_forest(
+                    df_scan, n_days, eps,
+                    bootstrap_iters=100,
+                    use_gridsearch=False,
+                    use_bootstrap=False,
+                    progress_bar=None
+                )
+                ml_change_pct = (predicted_price - latest_close) / latest_close * 100
+
+                results.append({
+                    'Ticker': scan_ticker,
+                    'ML % Increase': ml_change_pct,
+                    'MC Median % Increase': mc_change_pct
+                })
+            except Exception:
+                continue
+            progress_bar.progress((i + 1) / total)
+
+        if results:
+            results_df = pd.DataFrame(results)
+            results_df.sort_values(by='ML % Increase', ascending=False, inplace=True)
+            st.subheader("S&P 500 Scanner Results (Ranked by ML % Increase)")
+            st.dataframe(results_df.style.format({"ML % Increase": "{:.2f}%", "MC Median % Increase": "{:.2f}%"}))
+        else:
+            st.warning("No results to display.")
+
 # --------------------------------------
 # Main App Logic
 # --------------------------------------
@@ -157,7 +229,6 @@ try:
     log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
     mu, sigma = log_returns.mean(), log_returns.std()
 
-    # Calculate P/E ratio and adjust mu for Monte Carlo drift
     pe_ratio = latest_close / eps if eps > 0 else np.nan
     baseline_pe = 20.0
     adjusted_mu = mu * (baseline_pe / pe_ratio) if pe_ratio > 0 else mu
