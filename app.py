@@ -15,7 +15,7 @@ st.set_page_config(layout="wide", page_title="Stock Price Forecast (MC + ML)")
 # --------------------------------------
 # Create log directory (relative path)
 # --------------------------------------
-log_dir = "./trade_logs"
+log_dir = "./log_trade"
 try:
     os.makedirs(log_dir, exist_ok=True)
 except Exception as e:
