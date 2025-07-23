@@ -15,7 +15,7 @@ def ml_backtest(df, n_days_ahead, eps, capital, risk_pct, rr_ratio):
     df = df.copy()
     df['EPS'] = eps
     df['Target'] = df['Close'].shift(-n_days_ahead)
-    df = add_technical_indicators(df)
+    df = add_technical_indicators(df, n_days_ahead)
     df.dropna(inplace=True)
 
     features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS',
@@ -207,7 +207,6 @@ def train_random_forest(df, n_days_ahead, eps, bootstrap_iters=1000, use_gridsea
             boot_preds.append(rf.predict(latest_features)[0])
             if i % max(1, bootstrap_iters // 100) == 0:
                 progress_bar.progress(min(i / bootstrap_iters, 1.0))
-
         ci_lower = np.percentile(boot_preds, 2.5)
         ci_upper = np.percentile(boot_preds, 97.5)
 
@@ -231,7 +230,6 @@ if use_manual_price:
     manual_price = st.sidebar.number_input("Enter Latest Close Price", min_value=0.0, value=150.0, step=0.1)
 
 eps = st.sidebar.number_input("Enter EPS (Earnings Per Share)", min_value=0.01, value=5.0, step=0.01)
-# Sidebar Inputs for Backtesting
 capital = st.sidebar.number_input("Backtest Capital ($)", min_value=100.0, value=10000.0, step=100.0)
 risk_pct = st.sidebar.slider("Backtest Risk per Trade (%)", min_value=0.1, max_value=10.0, value=1.0, step=0.1) / 100.0
 rr_ratio = st.sidebar.slider("Backtest Risk-Reward Ratio", min_value=1.0, max_value=5.0, value=2.0, step=0.5)
@@ -249,7 +247,7 @@ if st.sidebar.button("Run S&P 500 Scanner"):
         for i, scan_ticker in enumerate(sp500_tickers):
             try:
                 df_scan = get_stock_data(scan_ticker, period)
-                df_scan = add_technical_indicators(df_scan)
+                df_scan = add_technical_indicators(df_scan, n_days)
 
                 if df_scan.empty or len(df_scan) < 60:
                     continue
@@ -284,7 +282,7 @@ if st.sidebar.button("Run S&P 500 Scanner"):
             except Exception:
                 continue
             progress_bar.progress((i + 1) / total)
-
+        progress_bar.progress(1.0)
         if results:
             results_df = pd.DataFrame(results)
             results_df.sort_values(by='ML % Increase', ascending=False, inplace=True)
@@ -292,6 +290,8 @@ if st.sidebar.button("Run S&P 500 Scanner"):
             st.dataframe(results_df.style.format({"ML % Increase": "{:.2f}%", "MC Median % Increase": "{:.2f}%"}))
         else:
             st.warning("No results to display.")
+
+# ------- Remaining code continues exactly as before... -------
 
 # --------------------------------------
 # Main App Logic
