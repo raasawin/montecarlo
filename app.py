@@ -429,7 +429,7 @@ if run_backtest:
 # ML Strategy Backtesting Section
 # --------------------------------------
 st.subheader("🔄 ML Strategy Backtest (Walk-Forward)")
-df = add_technical_indicators(df, n_days_ahead)
+df = add_technical_indicators(df, n_days)
 
 if st.button("Run ML Backtest"):
     with st.spinner("Running ML backtest... please wait..."):
