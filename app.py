@@ -11,11 +11,11 @@ st.set_page_config(layout="wide", page_title="Stock Price Forecast (MC + ML)")
 # -------------------------
 # ML Walk-Forward Backtest
 # -------------------------
-def ml_backtest(df, n_days_ahead, eps, capital, risk_pct, rr_ratio):
+def ml_backtest(df, n_days, eps, capital, risk_pct, rr_ratio):
     df = df.copy()
     df['EPS'] = eps
-    df['Target'] = df['Close'].shift(-n_days_ahead)
-    df = add_technical_indicators(df, n_days_ahead)
+    df['Target'] = df['Close'].shift(-n_days)
+    df = add_technical_indicators(df, n_days)
     df.dropna(inplace=True)
 
     features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS',
@@ -23,7 +23,7 @@ def ml_backtest(df, n_days_ahead, eps, capital, risk_pct, rr_ratio):
 
     trades = []
 
-    for i in range(100, len(df) - n_days_ahead):
+    for i in range(100, len(df) - n_days):
         train_df = df.iloc[:i]
         test_df = df.iloc[i:i+1]
         
@@ -39,7 +39,7 @@ def ml_backtest(df, n_days_ahead, eps, capital, risk_pct, rr_ratio):
         X_test = test_df[features]
         predicted_price = model.predict(X_test)[0]
         entry_price = test_df['Close'].values[0]
-        true_future_price = df['Close'].iloc[i + n_days_ahead]
+        true_future_price = df['Close'].iloc[i + n_days]
         
         if predicted_price > entry_price:
             stop_loss = entry_price * 0.95
@@ -300,11 +300,11 @@ st.title(f"📈 Forecasting Stock Price: {ticker.upper()}")
 
 try:
     df = get_stock_data(ticker, period)
-    df = add_technical_indicators(df)
+    df = add_technical_indicators(df, n_days)
 
     if use_manual_price and manual_price is not None:
         df.iloc[-1, df.columns.get_loc("Close")] = manual_price
-        df = add_technical_indicators(df)  # Recalculate indicators after price change
+        df = add_technical_indicators(df, n_days)  # Recalculate indicators after price change
 
     df.dropna(inplace=True)
 
