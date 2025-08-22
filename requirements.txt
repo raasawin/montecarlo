@@ -1,8 +1,11 @@
-yfinance
 pandas
+yfinance
 numpy
 scikit-learn
-matplotlib
 xgboost
 lightgbm
 plotly
+lxml
+html5lib
+beautifulsoup4
+matplotlib
