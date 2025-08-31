@@ -203,7 +203,9 @@ def train_ml_model(df, n_days_ahead, eps,
         X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
         if len(X_train) < 20:
             raise ValueError("Not enough valid data to train the model. Try selecting a longer period.")
-
+        st.write("Training XGBoost...")
+        model.fit(X_train, y_train)
+        st.write("Training complete!")
         # Simple default XGBoost hyperparameters (you can add GridSearchCV separately if desired)
         xgb = XGBRegressor(
             n_estimators=300,
