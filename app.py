@@ -355,4 +355,21 @@ def backtest_model_performance(y_true, y_pred):
     st.dataframe(metrics_df.style.format({"Value": "{:.4f}"}))
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(y=y_true, mode='lines', name
+    fig.add_trace(go.Scatter(y=y_true, mode='lines', name='Actual Price'))
+    fig.add_trace(go.Scatter(y=y_pred, mode='lines', name='Predicted Price'))
+    fig.update_layout(
+        title="Actual vs Predicted Stock Price",
+        xaxis_title="Test Sample Index",
+        yaxis_title="Price",
+        legend=dict(x=0, y=1)
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    fig2 = go.Figure()
+    fig2.add_trace(go.Histogram(x=residuals, nbinsx=30))
+    fig2.update_layout(
+        title="Prediction Residuals Histogram",
+        xaxis_title="Residual (Actual - Predicted)",
+        yaxis_title="Frequency"
+    )
+    st.plotly_chart(fig2, use_container_width=True)
