@@ -1,12 +1,3 @@
-Perfect! Here’s your full app with only the minimal fixes applied:
-	•	model = None initialized before the main try: block
-	•	Backtest only runs if model is defined
-	•	Optional “training in progress” message added for XGBoost / Random Forest
-	•	Everything else, including all functions, technical indicators, Monte Carlo, S&P 500 scanner, and trade logging logic, is untouched
-
-You can paste this directly into your Streamlit app.
-
-⸻
 
 
 import streamlit as st
