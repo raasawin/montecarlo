@@ -140,21 +140,24 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
             st.write("Training complete!")
             best_params = {'n_estimators': 100, 'max_depth': None}
     else:  # XGBoost
-        best_model = XGBRegressor(
-            n_estimators=300,
-            learning_rate=0.05,
-            max_depth=5,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=0,
-            objective="reg:squarederror",
-            verbosity=0
-        )
-        st.write("Training XGBoost...")
-        best_model.fit(X_train, y_train)
-        st.write("Training complete!")
-        best_params = best_model.get_params()
-
+    n_estimators = 50 if len(X_train) < 200 else 300
+    best_model = XGBRegressor(
+        n_estimators=n_estimators,
+        learning_rate=0.05,
+        max_depth=5,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        random_state=0,
+        objective="reg:squarederror",
+        verbosity=0,
+        n_jobs=1  # force single-thread
+    )
+    st.write("Training XGBoost, please wait...")
+    best_model.fit(X_train, y_train)
+    st.write("Training complete!")
+    best_params = best_model.get_params()
+    
+    
     y_pred = best_model.predict(X_test)
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
     latest_features = X.iloc[[-1]]
