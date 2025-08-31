@@ -1,4 +1,3 @@
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -7,6 +6,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.utils import resample
+from xgboost import XGBRegressor
 import plotly.graph_objects as go
 from pathlib import Path
 import datetime as dt
@@ -106,10 +106,14 @@ def monte_carlo_simulation(S0, mu, sigma, T, N, M):
     return simulations
 
 # --------------------------------------
-# ML Model
+# ML Model (RF or XGBoost)
 # --------------------------------------
-def train_random_forest(df, n_days_ahead, eps,
-                        bootstrap_iters=1000, use_gridsearch=False, use_bootstrap=False, progress_bar=None):
+def train_ml_model(df, n_days_ahead, eps,
+                   model_choice="Random Forest",
+                   bootstrap_iters=1000,
+                   use_gridsearch=False,
+                   use_bootstrap=False,
+                   progress_bar=None):
     df['EPS'] = eps
     df['Target'] = df['Close'].shift(-n_days_ahead)
     df = df.dropna()
@@ -122,32 +126,52 @@ def train_random_forest(df, n_days_ahead, eps,
     if len(X_train) < 20:
         raise ValueError("Not enough valid data to train the model. Try selecting a longer period.")
 
-    if use_gridsearch:
-        param_grid = {'n_estimators': [100, 200], 'max_depth': [None, 5, 10]}
-        tscv = TimeSeriesSplit(n_splits=5)
-        model = GridSearchCV(RandomForestRegressor(random_state=0),
-                             param_grid, cv=tscv, scoring='neg_mean_squared_error')
-        model.fit(X_train, y_train)
-        best_model = model.best_estimator_
-        best_params = model.best_params_
-    else:
-        best_model = RandomForestRegressor(n_estimators=100, random_state=0)
-        best_model.fit(X_train, y_train)
-        best_params = {'n_estimators': 100, 'max_depth': None}
+    # --- Model selection
+    if model_choice == "Random Forest":
+        if use_gridsearch:
+            param_grid = {'n_estimators': [100, 200], 'max_depth': [None, 5, 10]}
+            tscv = TimeSeriesSplit(n_splits=5)
+            model = GridSearchCV(RandomForestRegressor(random_state=0),
+                                 param_grid, cv=tscv, scoring='neg_mean_squared_error')
+            model.fit(X_train, y_train)
+            best_model = model.best_estimator_
+            best_params = model.best_params_
+        else:
+            best_model = RandomForestRegressor(n_estimators=100, random_state=0)
+            best_model.fit(X_train, y_train)
+            best_params = {'n_estimators': 100, 'max_depth': None}
 
+    elif model_choice == "XGBoost":
+        best_model = XGBRegressor(
+            n_estimators=300,
+            learning_rate=0.05,
+            max_depth=5,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=0,
+            objective="reg:squarederror"
+        )
+        best_model.fit(X_train, y_train)
+        best_params = best_model.get_params()
+
+    else:
+        raise ValueError(f"Unsupported model_choice: {model_choice}")
+
+    # --- Evaluation
     y_pred = best_model.predict(X_test)
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
     latest_features = X.iloc[[-1]]
     predicted_price = best_model.predict(latest_features)[0]
 
+    # --- Bootstrap CI
     ci_lower, ci_upper = None, None
     if use_bootstrap and progress_bar:
         boot_preds = []
         for i in range(bootstrap_iters):
             X_res, y_res = resample(X_train, y_train)
-            rf = RandomForestRegressor(**best_model.get_params())
-            rf.fit(X_res, y_res)
-            boot_preds.append(rf.predict(latest_features)[0])
+            model_clone = type(best_model)(**best_model.get_params())
+            model_clone.fit(X_res, y_res)
+            boot_preds.append(model_clone.predict(latest_features)[0])
             if i % max(1, bootstrap_iters // 100) == 0:
                 progress_bar.progress(min(i / bootstrap_iters, 1.0))
         ci_lower = np.percentile(boot_preds, 2.5)
@@ -177,7 +201,8 @@ period = st.sidebar.selectbox("Historical Data Period", ["6mo", "1y", "2y", "5y"
 n_simulations = st.sidebar.slider("Monte Carlo Simulations", 100, 10000, 500, step=100)
 n_days = st.sidebar.slider("Days into the Future", 10, 180, 30, step=10)
 
-use_gridsearch = st.sidebar.checkbox("Use GridSearchCV (slower, better tuning)", value=False)
+model_choice = st.sidebar.selectbox("ML Model", ["Random Forest", "XGBoost"], index=0)
+use_gridsearch = st.sidebar.checkbox("Use GridSearchCV (RF only)", value=False)
 use_bootstrap = st.sidebar.checkbox("Use Bootstrapping for CI (slower)", value=False)
 use_manual_price = st.sidebar.checkbox("Use Manual Close Price")
 manual_price = st.sidebar.number_input("Enter Latest Close Price", min_value=0.0, value=150.0, step=0.1) if use_manual_price else None
@@ -231,8 +256,9 @@ if st.sidebar.button("Run S&P 500 Scanner"):
                 mc_p50 = np.percentile(final_prices, 50)
                 mc_change_pct = (mc_p50 - latest_close) / latest_close * 100
 
-                _, _, predicted_price, _, _, _, _ = train_random_forest(
+                _, _, predicted_price, _, _, _, _ = train_ml_model(
                     df_scan, n_days, eps,
+                    model_choice=model_choice,
                     bootstrap_iters=100, use_gridsearch=False, use_bootstrap=False
                 )
                 ml_change_pct = (predicted_price - latest_close) / latest_close * 100
@@ -286,13 +312,16 @@ try:
     st.write(f"**95th percentile price**: ${p95:.2f} ({(p95 - latest_close)/latest_close:.2%})")
 
     progress_bar = st.progress(0)
-    model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_random_forest(
-        df, n_days, eps, bootstrap_iters=1000,
+    model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_ml_model(
+        df, n_days, eps,
+        model_choice=model_choice,
+        bootstrap_iters=1000,
         use_gridsearch=use_gridsearch, use_bootstrap=use_bootstrap, progress_bar=progress_bar
     )
     ml_change_pct = (predicted_price - latest_close) / latest_close * 100
 
     st.subheader(f"Machine Learning Prediction ({n_days}-Day Close)")
+    st.write(f"**Model**: {model_choice}")
     st.write(f"**Predicted Price**: ${predicted_price:.2f}")
     if ci_lower is not None and ci_upper is not None:
         st.write(f"**95% Prediction Interval**: ${ci_lower:.2f} to ${ci_upper:.2f}")
@@ -329,93 +358,4 @@ try:
             risk_per_share = sl - entry
             tp = entry - tp_rr * risk_per_share
         risk_dollars = account_size * (risk_pct / 100.0)
-        shares = int(risk_dollars // risk_per_share) if risk_per_share > 0 else 0
-
-    st.markdown("### 🧮 Position Sizing")
-    st.write(f"**Side**: {trade_side} | **Entry**: ${entry:,.2f} | "
-             f"**Stop**: {('—' if np.isnan(sl) else f'${sl:,.2f}')} | "
-             f"**Take Profit**: {('—' if np.isnan(tp) else f'${tp:,.2f}')} | "
-             f"**Shares**: {shares}")
-    st.write(f"**Account Risk**: ${risk_dollars:,.2f}")
-
-
-    # --- Trade logging button
-    if trade_side in ("LONG", "SHORT") and shares > 0 and not np.isnan(sl) and not np.isnan(tp):
-        if st.button("📝 Log Trade"):
-            trade = {
-                "timestamp": dt.datetime.utcnow().isoformat(),
-                "ticker": ticker.upper(),
-                "side": trade_side,
-                "entry": entry,
-                "stop": sl,
-                "take_profit": tp,
-                "shares": shares,
-                "account_size": account_size,
-                "risk_pct": risk_pct,
-                "atr_mult": atr_mult,
-                "tp_rr": tp_rr,
-                "ml_change_pct": ml_change_pct,
-                "mc_median_change_pct": (p50 - latest_close) / latest_close * 100,
-                "predicted_price": predicted_price,
-                "rmse": rmse,
-                "n_days": n_days,
-                "use_gridsearch": use_gridsearch,
-                "use_bootstrap": use_bootstrap
-            }
-            path = log_trade(trade)
-            st.success(f"Trade logged to {path}")
-
-except Exception as e:
-    st.error(f"Error loading data or running simulation: {e}")
-    st.stop()
-
-# --------------------------------------
-# Backtest block
-# --------------------------------------
-run_backtest = st.sidebar.checkbox("Run Backtest on Test Set", value=False)
-
-def backtest_model_performance(y_true, y_pred):
-    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-    mae = mean_absolute_error(y_true, y_pred)
-    r2 = r2_score(y_true, y_pred)
-    residuals = y_true - y_pred
-
-    st.subheader("📊 Backtest Results")
-
-    metrics_df = pd.DataFrame({
-        "Metric": ["RMSE", "MAE", "R² Score"],
-        "Value": [rmse, mae, r2]
-    })
-    st.dataframe(metrics_df.style.format({"Value": "{:.4f}"}))
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(y=y_true, mode='lines', name='Actual Price'))
-    fig.add_trace(go.Scatter(y=y_pred, mode='lines', name='Predicted Price'))
-    fig.update_layout(
-        title="Actual vs Predicted Stock Price",
-        xaxis_title="Test Sample Index",
-        yaxis_title="Price",
-        legend=dict(x=0, y=1)
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    fig2 = go.Figure()
-    fig2.add_trace(go.Histogram(x=residuals, nbinsx=30))
-    fig2.update_layout(
-        title="Prediction Residuals Histogram",
-        xaxis_title="Residual (Actual - Predicted)",
-        yaxis_title="Frequency"
-    )
-    st.plotly_chart(fig2, use_container_width=True)
-
-# --- Only run backtest if training succeeded
-if 'model' in locals() and run_backtest:
-    features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS',
-                'SMA_50', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal']
-    df['EPS'] = eps
-    df['Target'] = df['Close'].shift(-n_days)
-    df.dropna(inplace=True)
-    X = df[features]; y = df['Target']
-    _, X_test, _, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
-    y_pred = model.predict(X_test)
-    backtest_model_performance(y_test, y_pred)
+        shares = int(risk_dollars //
