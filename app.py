@@ -302,50 +302,26 @@ try:
     baseline_pe = 20.0
     adjusted_mu = mu * (baseline_pe / pe_ratio) if pe_ratio > 0 else mu
 
+    # Monte Carlo simulation
     sim_data = monte_carlo_simulation(latest_close, adjusted_mu, sigma, n_days, n_days, n_simulations)
     final_prices = sim_data[-1, :]
     p5, p50, p95 = np.percentile(final_prices, [5, 50, 95])
 
-    st.subheader("Monte Carlo Simulation Results")
-    st.write(f"**5th percentile price**: ${p5:.2f} ({(p5 - latest_close)/latest_close:.2%})")
-    st.write(f"**Median price**: ${p50:.2f} ({(p50 - latest_close)/latest_close:.2%})")
-    st.write(f"**95th percentile price**: ${p95:.2f} ({(p95 - latest_close)/latest_close:.2%})")
-
+    # ML prediction
     progress_bar = st.progress(0)
     model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_ml_model(
         df, n_days, eps,
         model_choice=model_choice,
         bootstrap_iters=1000,
-        use_gridsearch=use_gridsearch, use_bootstrap=use_bootstrap, progress_bar=progress_bar
+        use_gridsearch=use_gridsearch,
+        use_bootstrap=use_bootstrap,
+        progress_bar=progress_bar
     )
-    ml_change_pct = (predicted_price - latest_close) / latest_close * 100
 
-    st.subheader(f"Machine Learning Prediction ({n_days}-Day Close)")
-    st.write(f"**Model**: {model_choice}")
-    st.write(f"**Predicted Price**: ${predicted_price:.2f}")
-    if ci_lower is not None and ci_upper is not None:
-        st.write(f"**95% Prediction Interval**: ${ci_lower:.2f} to ${ci_upper:.2f}")
-    st.write(f"**Actual Price (last test sample)**: ${actual_price:.2f}")
-    st.write(f"**RMSE**: ${rmse:.2f}")
-    st.write(f"**Expected Price Change**: {ml_change_pct:+.2f}%")
-    st.write(f"**Best Model Parameters**: `{best_params}`")
-
-    st.markdown("---")
-    st.subheader("📊 Final Summary")
-    if ml_change_pct > 1 and p50 > latest_close:
-        st.success(f"**Likely Upward Trend** — ML: ~{ml_change_pct:.2f}%, MC: {(p50 - latest_close)/latest_close:.2%}")
-        trade_side = "LONG"
-    elif ml_change_pct < -1 and p50 < latest_close:
-        st.error(f"**Likely Downward Trend** — ML: ~{ml_change_pct:.2f}%, MC: {(p50 - latest_close)/latest_close:.2%}")
-        trade_side = "SHORT"
-    else:
-        st.warning("**Uncertain** — Mixed or flat predictions. Use caution.")
-        trade_side = "FLAT"
-
-    # --- Position sizing
+    # Position sizing
     atr = float(df['ATR_14'].iloc[-1]) if 'ATR_14' in df.columns else np.nan
     entry = float(latest_close)
-    if np.isnan(atr) or atr == 0 or trade_side == "FLAT":
+    if np.isnan(atr) or atr == 0:
         sl, tp, shares, risk_dollars = np.nan, np.nan, 0, 0.0
     else:
         stop_dist = atr_mult * atr
@@ -353,9 +329,13 @@ try:
             sl = entry - stop_dist
             risk_per_share = entry - sl
             tp = entry + tp_rr * risk_per_share
-        else:  # SHORT
+        else:
             sl = entry + stop_dist
             risk_per_share = sl - entry
             tp = entry - tp_rr * risk_per_share
         risk_dollars = account_size * (risk_pct / 100.0)
-shares = int(risk_dollars // risk_per_share) if risk_per_share > 0 else 0
+        shares = int(risk_dollars // risk_per_share) if risk_per_share > 0 else 0
+
+except Exception as e:
+    st.error(f"Error loading data or running simulation: {e}")
+    st.stop()
