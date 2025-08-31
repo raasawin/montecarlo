@@ -358,4 +358,4 @@ try:
             risk_per_share = sl - entry
             tp = entry - tp_rr * risk_per_share
         risk_dollars = account_size * (risk_pct / 100.0)
-        shares = int(risk_dollars //
+shares = int(risk_dollars // risk_per_share) if risk_per_share > 0 else 0
