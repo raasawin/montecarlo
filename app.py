@@ -58,8 +58,7 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
 
     features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS',
                 'SMA_50', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal']
-    X = df[features]
-    y = df['Target'].values.ravel()  # flatten target
+    X = df[features]; y = df['Target']
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
     if len(X_train) < 20:
@@ -94,13 +93,13 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
             n_jobs=1
         )
         st.write("Training XGBoost, please wait...")
-        best_model.fit(X_train, y_train.ravel())
+        best_model.fit(X_train, y_train)
         st.write("Training complete!")
         best_params = best_model.get_params()
 
     y_pred = best_model.predict(X_test)
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-    latest_features = X.iloc[[-1]]  # ensure 2D
+    latest_features = X.iloc[[-1]]
     predicted_price = best_model.predict(latest_features)[0]
 
     ci_lower, ci_upper = None, None
@@ -108,8 +107,7 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
         boot_preds = []
         for i in range(bootstrap_iters):
             X_res, y_res = resample(X_train, y_train)
-            y_res = y_res.ravel()  # flatten for safety
-            rf = RandomForestRegressor(**{k: v for k, v in best_model.get_params().items() if k in RandomForestRegressor().get_params()})
+            rf = RandomForestRegressor(**best_model.get_params())
             rf.fit(X_res, y_res)
             boot_preds.append(rf.predict(latest_features)[0])
             if i % max(1, bootstrap_iters // 100) == 0:
@@ -117,17 +115,33 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
         ci_lower = np.percentile(boot_preds, 2.5)
         ci_upper = np.percentile(boot_preds, 97.5)
 
-    return (
-        best_model,
-        rmse,
-        predicted_price,
-        y_test[-1],
-        ci_lower,
-        ci_upper,
-        best_params,
-        y_test,
-        y_pred
-    )
+    return best_model, rmse, predicted_price, y_test.values[-1], ci_lower, ci_upper, best_params, y_test.values, y_pred
+
+# --------------------------------------
+# Backtest function
+# --------------------------------------
+def backtest_model_performance(y_true, y_pred):
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(y_true, label="Actual")
+    ax.plot(y_pred, label="Predicted")
+    ax.set_title("Backtest: Actual vs Predicted")
+    ax.legend()
+    st.pyplot(fig)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.scatter(y_true, y_pred, alpha=0.6)
+    ax.plot([min(y_true), max(y_true)], [min(y_true), max(y_true)], 'r--')
+    ax.set_xlabel("Actual")
+    ax.set_ylabel("Predicted")
+    ax.set_title("Predicted vs Actual Scatter")
+    st.pyplot(fig)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    residuals = y_true - y_pred
+    ax.hist(residuals, bins=30, alpha=0.7)
+    ax.set_title("Residuals Distribution")
+    st.pyplot(fig)
+
 # --------------------------------------
 # Sidebar inputs
 # --------------------------------------
@@ -160,7 +174,10 @@ try:
     df.dropna(inplace=True)
 
     latest_close = df['Close'].iloc[-1]
-    log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
+
+    # Ensure 1D array for log_returns
+    close_vals = df['Close'].values.ravel()
+    log_returns = np.log(close_vals[1:] / close_vals[:-1])
     mu, sigma = log_returns.mean(), log_returns.std()
 
     sim = monte_carlo_simulation(latest_close, mu, sigma, n_days, n_days, n_simulations)
@@ -226,7 +243,8 @@ if scan_sp500:
                     return None
 
                 latest_close_t = df_t['Close'].iloc[-1]
-                log_returns_t = np.log(df_t['Close'] / df_t['Close'].shift(1)).dropna()
+                close_vals_t = df_t['Close'].values.ravel()
+                log_returns_t = np.log(close_vals_t[1:] / close_vals_t[:-1])
                 mu_t, sigma_t = log_returns_t.mean(), log_returns_t.std()
 
                 sim_t = monte_carlo_simulation(latest_close_t, mu_t, sigma_t, n_days, n_days, max(200, min(1000, n_simulations//2)))
