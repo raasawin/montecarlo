@@ -354,7 +354,7 @@ def backtest_model_performance(y_true, y_pred):
     })
     st.dataframe(metrics_df.style.format({"Value": "{:.4f}"}))
 
-        fig = go.Figure()
+    fig = go.Figure()
     fig.add_trace(go.Scatter(y=y_true, mode='lines', name='Actual Price'))
     fig.add_trace(go.Scatter(y=y_pred, mode='lines', name='Predicted Price'))
     fig.update_layout(
