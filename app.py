@@ -58,7 +58,8 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
 
     features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS',
                 'SMA_50', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal']
-    X = df[features]; y = df['Target']
+    X = df[features].astype(float)
+    y = df['Target'].astype(float)
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
     if len(X_train) < 20:
@@ -98,8 +99,11 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
         best_params = best_model.get_params()
 
     y_pred = best_model.predict(X_test)
+
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-    latest_features = X.iloc[[-1]]
+
+    # Fix: ensure latest_features is 2D numeric array
+    latest_features = X.iloc[[-1]].to_numpy().reshape(1, -1)
     predicted_price = best_model.predict(latest_features)[0]
 
     ci_lower, ci_upper = None, None
@@ -109,7 +113,8 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
             X_res, y_res = resample(X_train, y_train)
             rf = RandomForestRegressor(**best_model.get_params())
             rf.fit(X_res, y_res)
-            boot_preds.append(rf.predict(latest_features)[0])
+            boot_pred = rf.predict(latest_features)[0]
+            boot_preds.append(boot_pred)
             if i % max(1, bootstrap_iters // 100) == 0:
                 progress_bar.progress(min(i / bootstrap_iters, 1.0))
         ci_lower = np.percentile(boot_preds, 2.5)
@@ -174,10 +179,7 @@ try:
     df.dropna(inplace=True)
 
     latest_close = df['Close'].iloc[-1]
-
-    # Ensure 1D array for log_returns
-    close_vals = df['Close'].values.ravel()
-    log_returns = np.log(close_vals[1:] / close_vals[:-1])
+    log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
     mu, sigma = log_returns.mean(), log_returns.std()
 
     sim = monte_carlo_simulation(latest_close, mu, sigma, n_days, n_days, n_simulations)
@@ -243,18 +245,19 @@ if scan_sp500:
                     return None
 
                 latest_close_t = df_t['Close'].iloc[-1]
-                close_vals_t = df_t['Close'].values.ravel()
-                log_returns_t = np.log(close_vals_t[1:] / close_vals_t[:-1])
+                log_returns_t = np.log(df_t['Close'] / df_t['Close'].shift(1)).dropna()
                 mu_t, sigma_t = log_returns_t.mean(), log_returns_t.std()
 
-                sim_t = monte_carlo_simulation(latest_close_t, mu_t, sigma_t, n_days, n_days, max(200, min(1000, n_simulations//2)))
+                sim_t = monte_carlo_simulation(latest_close_t, mu_t, sigma_t, n_days, n_days,
+                                               max(200, min(1000, n_simulations//2)))
                 mc_median = float(np.median(sim_t[-1, :]))
                 mc_change_pct = (mc_median - latest_close_t) / latest_close_t * 100.0
 
                 try:
                     _, _, pred_t, _, _, _, _, _, _ = train_ml_model(df_t, n_days, eps,
                                                                     model_choice=model_choice,
-                                                                    bootstrap_iters=100, use_gridsearch=False, use_bootstrap=False,
+                                                                    bootstrap_iters=100, use_gridsearch=False,
+                                                                    use_bootstrap=False,
                                                                     progress_bar=None)
                     ml_change_pct_t = (pred_t - latest_close_t) / latest_close_t * 100.0
                 except Exception:
@@ -312,7 +315,8 @@ if scan_sp500:
             }))
 
             csv = df_results.to_csv(index=False)
-            st.download_button("⬇️ Download full results (CSV)", csv, file_name="sp500_scan_results.csv", mime="text/csv")
+            st.download_button("⬇️ Download full results (CSV)", csv,
+                               file_name="sp500_scan_results.csv", mime="text/csv")
 
             best = df_results.iloc[0]
             st.markdown(f"**Top pick:** {best['Ticker']} — Score: {best['Score']:+.2f}% | "
