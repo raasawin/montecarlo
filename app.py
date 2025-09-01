@@ -9,7 +9,6 @@ from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSp
 from sklearn.utils import resample
 from xgboost import XGBRegressor
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 
 # --------------------------------------
 # Utility functions
@@ -27,6 +26,7 @@ def add_technical_indicators(df):
     df["Volume_Change"] = df["Volume"].pct_change()
     df["SMA_50"] = df["Close"].rolling(window=50).mean()
     df["EMA_20"] = df["Close"].ewm(span=20, adjust=False).mean()
+
     delta = df["Close"].diff()
     gain = np.where(delta > 0, delta, 0)
     loss = np.where(delta < 0, -delta, 0)
@@ -34,6 +34,7 @@ def add_technical_indicators(df):
     avg_loss = pd.Series(loss).rolling(14).mean()
     rs = avg_gain / avg_loss
     df["RSI_14"] = 100 - (100 / (1 + rs))
+
     df["EMA_12"] = df["Close"].ewm(span=12, adjust=False).mean()
     df["EMA_26"] = df["Close"].ewm(span=26, adjust=False).mean()
     df["MACD"] = df["EMA_12"] - df["EMA_26"]
@@ -59,21 +60,17 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
     df['EPS'] = eps
     df['Target'] = df['Close'].shift(-n_days_ahead)
     df.dropna(inplace=True)
-    
+
     features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS',
                 'SMA_50', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal']
     X = df[features].astype(float)
-    y = df['Target'].astype(float)
-    
+    y = df['Target'].astype(float).values.ravel()  # ensure 1D
+
     X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
-    
-    # Ensure 1D arrays
-    y_train = np.ravel(y_train)
-    y_test = np.ravel(y_test)
-    
+
     if len(X_train) < 20:
         raise ValueError("Not enough valid data to train the model. Try selecting a longer period.")
-    
+
     if model_choice == "RandomForest":
         if use_gridsearch:
             param_grid = {'n_estimators': [100, 200], 'max_depth': [None, 5, 10]}
@@ -102,19 +99,19 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
         )
         best_model.fit(X_train, y_train)
         best_params = best_model.get_params()
-    
+
     y_pred = best_model.predict(X_test)
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-    latest_features = X.iloc[[-1]].astype(float)
+
+    latest_features = X.iloc[[-1]].astype(float)  # ensure 2D
     predicted_price = best_model.predict(latest_features)[0]
-    
+
     ci_lower, ci_upper = None, None
     if use_bootstrap and progress_bar:
         boot_preds = []
         for i in range(bootstrap_iters):
             X_res, y_res = resample(X_train, y_train)
-            X_res = np.array(X_res, dtype=float)
-            y_res = np.ravel(y_res)
+            y_res = np.ravel(y_res)  # ensure 1D
             rf = RandomForestRegressor(**best_model.get_params())
             rf.fit(X_res, y_res)
             boot_preds.append(rf.predict(latest_features)[0])
@@ -122,7 +119,7 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
                 progress_bar.progress(min(i / bootstrap_iters, 1.0))
         ci_lower = np.percentile(boot_preds, 2.5)
         ci_upper = np.percentile(boot_preds, 97.5)
-    
+
     return best_model, rmse, predicted_price, y_test[-1], ci_lower, ci_upper, best_params, y_test, y_pred
 
 # --------------------------------------
@@ -135,7 +132,7 @@ def backtest_model_performance(y_true, y_pred):
     ax.set_title("Backtest: Actual vs Predicted")
     ax.legend()
     st.pyplot(fig)
-    
+
     fig, ax = plt.subplots(figsize=(10,4))
     ax.scatter(y_true, y_pred, alpha=0.6)
     ax.plot([min(y_true), max(y_true)], [min(y_true), max(y_true)], 'r--')
@@ -143,7 +140,7 @@ def backtest_model_performance(y_true, y_pred):
     ax.set_ylabel("Predicted")
     ax.set_title("Predicted vs Actual Scatter")
     st.pyplot(fig)
-    
+
     fig, ax = plt.subplots(figsize=(10,4))
     residuals = y_true - y_pred
     ax.hist(residuals, bins=30, alpha=0.7)
