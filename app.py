@@ -226,65 +226,25 @@ def load_sp500_list(choice, uploaded, local_path):
 if scan_sp500:
     st.header("🔍 S&P 500 Scanner Results")
     tickers = load_sp500_list(sp500_choice, uploaded_sp500, local_sp500_path)
+    
     if not tickers:
         st.warning("No tickers to scan. Upload or provide a local CSV.")
     else:
         st.info(f"Scanning {len(tickers)} tickers (this may take a while)...")
 
-        def process_ticker(ticker_sym):
-            try:
-                df_t = get_stock_data(ticker_sym, "1y")
-                df_t = add_technical_indicators(df_t)
-                df_t.dropna(inplace=True)
-                if len(df_t) < 80:
-                    return None
-
-                latest_close_t = df_t['Close'].iloc[-1]
-                log_returns_t = np.log(df_t['Close'] / df_t['Close'].shift(1)).dropna()
-                mu_t, sigma_t = log_returns_t.mean(), log_returns_t.std()
-
-                sim_t = monte_carlo_simulation(latest_close_t, mu_t, sigma_t, n_days, n_days, max(200, min(1000, n_simulations//2)))
-                mc_median = float(np.median(sim_t[-1, :]))
-                mc_change_pct = (mc_median - latest_close_t) / latest_close_t * 100.0
-
-                try:
-                    _, _, pred_t, _, _, _, _, _, _ = train_ml_model(df_t, n_days, eps,
-                                                                    model_choice=model_choice,
-                                                                    bootstrap_iters=100, use_gridsearch=False, use_bootstrap=False,
-                                                                    progress_bar=None)
-                    ml_change_pct_t = (pred_t - latest_close_t) / latest_close_t * 100.0
-                except Exception:
-                    ml_change_pct_t = np.nan
-
-                if rank_mode == "ML % Increase":
-                    score = ml_change_pct_t if not np.isnan(ml_change_pct_t) else -np.inf
-                elif rank_mode == "MC Median % Increase":
-                    score = mc_change_pct
-                else:
-                    if np.isnan(ml_change_pct_t):
-                        score = mc_change_pct
-                    else:
-                        score = 0.5 * (ml_change_pct_t + mc_change_pct)
-
-                return {
-                    "Ticker": ticker_sym,
-                    "ML % Increase": ml_change_pct_t,
-                    "MC Median % Increase": mc_change_pct,
-                    "Score": score
-                }
-            except Exception:
-                return None
-
+        # Thread-safe results list
+        results = []
         placeholder = st.empty()
         progress_bar = st.progress(0)
-        results = []
-        max_workers = min(16, max(4, (len(tickers)//10) + 1))
+        total = len(tickers)
+        completed = 0
 
+        # Parallel processing
+        max_workers = min(16, max(4, (total // 10) + 1))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(process_ticker, t): t for t in tickers}
-            total = len(futures)
-            completed = 0
-            for fut in as_completed(futures):
+            future_to_ticker = {executor.submit(process_ticker, t): t for t in tickers}
+            
+            for fut in as_completed(future_to_ticker):
                 completed += 1
                 progress_bar.progress(int(completed / total * 100))
                 res = fut.result()
@@ -307,9 +267,12 @@ if scan_sp500:
                 "Score": "{:+.2f}%"
             }))
 
+            # Download full results
             csv = df_results.to_csv(index=False)
-            st.download_button("⬇️ Download full results (CSV)", csv, file_name="sp500_scan_results.csv", mime="text/csv")
+            st.download_button("⬇️ Download full results (CSV)", csv,
+                               file_name="sp500_scan_results.csv", mime="text/csv")
 
+            # Highlight top pick
             best = df_results.iloc[0]
             st.markdown(f"**Top pick:** {best['Ticker']} — Score: {best['Score']:+.2f}% | "
                         f"ML: {best['ML % Increase']:+.2f}% | MC: {best['MC Median % Increase']:+.2f}%")
