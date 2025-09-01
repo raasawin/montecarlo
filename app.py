@@ -335,9 +335,9 @@ except Exception as e:
     st.error(f"Error loading data or running simulation: {e}")
     model = None  # Ensure variable exists for backtest
 
-# --------------------------------------
+# ---------------------------
 # Backtest block
-# --------------------------------------
+# ---------------------------
 run_backtest = st.sidebar.checkbox("Run Backtest on Test Set", value=False)
 
 def backtest_model_performance(y_true, y_pred):
@@ -373,3 +373,78 @@ def backtest_model_performance(y_true, y_pred):
         yaxis_title="Frequency"
     )
     st.plotly_chart(fig2, use_container_width=True)
+
+# ---------------------------
+# Backtest execution
+# ---------------------------
+if run_backtest and model is not None:
+    if 'y_test' in locals():
+        features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS',
+                    'SMA_50', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal']
+        X_test = df[features].iloc[-len(y_test):]
+        y_pred_test = model.predict(X_test)
+        backtest_model_performance(y_test, y_pred_test)
+    else:
+        st.warning("No model or test data available for backtest.")
+
+# ---------------------------
+# S&P 500 Scanner
+# ---------------------------
+if st.sidebar.button("🚀 Run S&P 500 Scanner"):
+    tickers = load_sp500_list(sp500_choice, uploaded_sp500, local_sp500_path)
+    if not tickers:
+        st.warning("No tickers found to scan.")
+    else:
+        st.info(f"Scanning {len(tickers)} tickers... This may take a while.")
+        results = []
+        scan_progress = st.progress(0)
+        for i, t in enumerate(tickers):
+            try:
+                df_t = get_stock_data(t, period)
+                df_t = add_technical_indicators(df_t)
+                df_t['EPS'] = eps
+                df_t.dropna(inplace=True)
+                latest_close_t = df_t['Close'].iloc[-1]
+
+                # Monte Carlo
+                log_returns_t = np.log(df_t['Close'] / df_t['Close'].shift(1)).dropna()
+                mu_t, sigma_t = log_returns_t.mean(), log_returns_t.std()
+                sim_t = monte_carlo_simulation(latest_close_t, mu_t, sigma_t, n_days, n_days, 100)
+                p50_t = np.percentile(sim_t[-1, :], 50)
+                mc_change_pct = (p50_t - latest_close_t) / latest_close_t * 100
+
+                # ML
+                try:
+                    model_t, _, predicted_price_t, _, _, _, _ = train_ml_model(
+                        df_t, n_days, eps, model_choice=model_choice,
+                        use_gridsearch=False, use_bootstrap=False
+                    )
+                    ml_change_pct = (predicted_price_t - latest_close_t) / latest_close_t * 100
+                except:
+                    ml_change_pct = np.nan
+
+                # Rank score
+                if rank_mode == "ML % Increase":
+                    score = ml_change_pct
+                elif rank_mode == "MC Median % Increase":
+                    score = mc_change_pct
+                else:
+                    score = np.nanmean([ml_change_pct, mc_change_pct])
+
+                results.append({
+                    "Ticker": t,
+                    "Latest Close": latest_close_t,
+                    "ML % Change": ml_change_pct,
+                    "MC % Change": mc_change_pct,
+                    "Score": score
+                })
+            except Exception as e:
+                st.warning(f"Failed for {t}: {e}")
+            scan_progress.progress(min((i + 1) / len(tickers), 1.0))
+
+        if results:
+            df_results = pd.DataFrame(results).sort_values("Score", ascending=False)
+            st.subheader("S&P 500 Scan Results")
+            st.dataframe(df_results)
+        else:
+            st.warning("No valid results from scan.")
