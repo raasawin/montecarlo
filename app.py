@@ -110,34 +110,31 @@ def monte_carlo_simulation(S0, mu, sigma, T, N, M):
 # --------------------------------------
 def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
                    bootstrap_iters=1000, use_gridsearch=False, use_bootstrap=False, progress_bar=None):
+    df = df.copy()
     df['EPS'] = eps
     df['Target'] = df['Close'].shift(-n_days_ahead)
-    df = df.dropna()
 
+    # --- Drop any rows with NaNs in features or target
     features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS',
                 'SMA_50', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal']
-    X = df[features]; y = df['Target']
+    df = df.dropna(subset=features + ['Target'])
+
+    if len(df) < 20:
+        raise ValueError("Not enough valid data to train the model. Try selecting a longer period.")
+
+    X = df[features]
+    y = df['Target']
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
     if len(X_train) < 20:
-        raise ValueError("Not enough valid data to train the model. Try selecting a longer period.")
+        raise ValueError("Not enough valid training data after splitting. Try selecting a longer period.")
 
+    # --- Model selection
     if model_choice == "RandomForest":
-        if use_gridsearch:
-            param_grid = {'n_estimators': [100, 200], 'max_depth': [None, 5, 10]}
-            tscv = TimeSeriesSplit(n_splits=5)
-            model = GridSearchCV(RandomForestRegressor(random_state=0),
-                                 param_grid, cv=tscv, scoring='neg_mean_squared_error')
-            model.fit(X_train, y_train)
-            best_model = model.best_estimator_
-            best_params = model.best_params_
-        else:
-            best_model = RandomForestRegressor(n_estimators=100, random_state=0)
-            st.write("Training Random Forest...")
-            best_model.fit(X_train, y_train)
-            st.write("Training complete!")
-            best_params = {'n_estimators': 100, 'max_depth': None}
-    else:  # XGBoost
+        best_model = RandomForestRegressor(n_estimators=100, random_state=0)
+        best_model.fit(X_train, y_train)
+        best_params = {'n_estimators': 100, 'max_depth': None}
+    else:
         n_estimators = 50 if len(X_train) < 200 else 300
         best_model = XGBRegressor(
             n_estimators=n_estimators,
@@ -148,11 +145,9 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
             random_state=0,
             objective="reg:squarederror",
             verbosity=0,
-            n_jobs=1  # force single-thread
+            n_jobs=1
         )
-        st.write("Training XGBoost, please wait...")
         best_model.fit(X_train, y_train)
-        st.write("Training complete!")
         best_params = best_model.get_params()
 
     y_pred = best_model.predict(X_test)
@@ -160,6 +155,7 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
     latest_features = X.iloc[[-1]]
     predicted_price = best_model.predict(latest_features)[0]
 
+    # --- Bootstrap CI
     ci_lower, ci_upper = None, None
     if use_bootstrap and progress_bar:
         boot_preds = []
@@ -173,8 +169,7 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
         ci_lower = np.percentile(boot_preds, 2.5)
         ci_upper = np.percentile(boot_preds, 97.5)
 
-    return best_model, rmse, predicted_price, y_test.values[-1], ci_lower, ci_upper, best_params
-
+    return best_model, rmse, predicted_price, y_test.values, ci_lower, ci_upper, best_params, X_test
 # --------------------------------------
 # Trade logging helper
 # --------------------------------------
@@ -378,15 +373,10 @@ def backtest_model_performance(y_true, y_pred):
 # Backtest execution
 # ---------------------------
 if run_backtest and model is not None:
-    if 'y_test' in locals():
-        features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS',
-                    'SMA_50', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal']
-        X_test = df[features].iloc[-len(y_test):]
-        y_pred_test = model.predict(X_test)
-        backtest_model_performance(y_test, y_pred_test)
+    if 'y_test' in locals() and len(y_test) > 0:
+        backtest_model_performance(y_test, model.predict(X_test))
     else:
-        st.warning("No model or test data available for backtest.")
-
+        st.warning("Not enough data for backtest. Try a longer period or different ticker.")
 # ---------------------------
 # S&P 500 Scanner
 # ---------------------------
