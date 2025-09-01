@@ -58,7 +58,8 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
 
     features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS',
                 'SMA_50', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal']
-    X = df[features]; y = df['Target']
+    X = df[features]
+    y = df['Target'].values.ravel()  # ensure 1D for XGBoost/RandomForest
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
     if len(X_train) < 20:
@@ -119,14 +120,13 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
         best_model,
         rmse,
         predicted_price,
-        y_test.values[-1],
+        y_test[-1],
         ci_lower,
         ci_upper,
         best_params,
-        y_test.values.ravel(),   # ensure 1D
-        np.array(y_pred).ravel() # ensure 1D
+        y_test,
+        y_pred
     )
-
 # --------------------------------------
 # Backtest function
 # --------------------------------------
