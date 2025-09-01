@@ -220,17 +220,22 @@ rank_mode = st.sidebar.selectbox("Scanner ranking mode",
 # ---------------------------
 st.title(f"📈 Forecasting Stock Price: {ticker.upper()}")
 
-model = None  # <<< Initialize model to prevent backtest errors
+model = None  # Initialize model
+X_test = None
+y_test_values = None
 
 try:
     df = get_stock_data(ticker, period)
     df = add_technical_indicators(df)
+    
     if use_manual_price and manual_price is not None:
         df.iloc[-1, df.columns.get_loc("Close")] = manual_price
         df = add_technical_indicators(df)
+    
     df.dropna(inplace=True)
-
     latest_close = df['Close'].iloc[-1]
+
+    # Monte Carlo setup
     log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
     mu, sigma = log_returns.mean(), log_returns.std()
     pe_ratio = latest_close / eps if eps > 0 else np.nan
@@ -246,12 +251,15 @@ try:
     st.write(f"**Median price**: ${p50:.2f} ({(p50 - latest_close)/latest_close:.2%})")
     st.write(f"**95th percentile price**: ${p95:.2f} ({(p95 - latest_close)/latest_close:.2%})")
 
+    # --- Train ML Model
     progress_bar = st.progress(0)
-    model, rmse, predicted_price, actual_price, ci_lower, ci_upper, best_params = train_ml_model(
+    model, rmse, predicted_price, y_test_values, ci_lower, ci_upper, best_params, X_test = train_ml_model(
         df, n_days, eps, model_choice=model_choice,
         bootstrap_iters=1000, use_gridsearch=use_gridsearch, use_bootstrap=use_bootstrap,
         progress_bar=progress_bar
     )
+
+    actual_price = y_test_values[-1]
     ml_change_pct = (predicted_price - latest_close) / latest_close * 100
 
     st.subheader(f"Machine Learning Prediction ({n_days}-Day Close)")
@@ -263,6 +271,7 @@ try:
     st.write(f"**Expected Price Change**: {ml_change_pct:+.2f}%")
     st.write(f"**Best Model Parameters**: `{best_params}`")
 
+    # --- Summary Trend
     st.markdown("---")
     st.subheader("📊 Final Summary")
     if ml_change_pct > 1 and p50 > latest_close:
@@ -275,7 +284,7 @@ try:
         st.warning("**Uncertain** — Mixed or flat predictions. Use caution.")
         trade_side = "FLAT"
 
-    # --- Position sizing
+    # --- Position Sizing
     atr = float(df['ATR_14'].iloc[-1]) if 'ATR_14' in df.columns else np.nan
     entry = float(latest_close)
     if np.isnan(atr) or atr == 0 or trade_side == "FLAT":
@@ -299,6 +308,10 @@ try:
              f"**Take Profit**: {('—' if np.isnan(tp) else f'${tp:,.2f}')} | "
              f"**Shares**: {shares}")
     st.write(f"**Account Risk**: ${risk_dollars:,.2f}")
+
+except Exception as e:
+    st.error(f"Error loading data or running simulation: {e}")
+    model, X_test, y_test_values = None, None, None
 
     # --- Trade logging button
     if trade_side in ("LONG", "SHORT") and shares > 0 and not np.isnan(sl) and not np.isnan(tp):
@@ -370,11 +383,12 @@ def backtest_model_performance(y_true, y_pred):
     st.plotly_chart(fig2, use_container_width=True)
 
 # ---------------------------
-# Backtest execution
+# Backtest Execution
 # ---------------------------
-if run_backtest and model is not None:
-    if 'y_test' in locals() and len(y_test) > 0:
-        backtest_model_performance(y_test, model.predict(X_test))
+if run_backtest and model is not None and X_test is not None and y_test_values is not None:
+    if len(y_test_values) > 0:
+        y_pred_test = model.predict(X_test)
+        backtest_model_performance(y_test_values, y_pred_test)
     else:
         st.warning("Not enough data for backtest. Try a longer period or different ticker.")
 # ---------------------------
