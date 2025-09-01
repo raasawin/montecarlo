@@ -9,8 +9,6 @@ from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSp
 from sklearn.utils import resample
 from xgboost import XGBRegressor
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import os
-from datetime import datetime
 
 # --------------------------------------
 # Utility functions
@@ -38,14 +36,6 @@ def add_technical_indicators(df):
     df["EMA_26"] = df["Close"].ewm(span=26, adjust=False).mean()
     df["MACD"] = df["EMA_12"] - df["EMA_26"]
     df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
-    return df
-
-def add_atr(df, window=14):
-    high_low = df['High'] - df['Low']
-    high_close = np.abs(df['High'] - df['Close'].shift())
-    low_close = np.abs(df['Low'] - df['Close'].shift())
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    df['ATR'] = tr.rolling(window).mean()
     return df
 
 def monte_carlo_simulation(last_price, mu, sigma, T, n_steps, n_simulations):
@@ -117,7 +107,7 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
         boot_preds = []
         for i in range(bootstrap_iters):
             X_res, y_res = resample(X_train, y_train)
-            rf = RandomForestRegressor(**best_model.get_params()) if model_choice=="RandomForest" else XGBRegressor(**best_model.get_params())
+            rf = RandomForestRegressor(**best_model.get_params())
             rf.fit(X_res, y_res)
             boot_preds.append(rf.predict(latest_features)[0])
             if i % max(1, bootstrap_iters // 100) == 0:
@@ -125,7 +115,17 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
         ci_lower = np.percentile(boot_preds, 2.5)
         ci_upper = np.percentile(boot_preds, 97.5)
 
-    return best_model, rmse, predicted_price, y_test.values[-1], ci_lower, ci_upper, best_params, y_test.values, y_pred
+    return (
+        best_model,
+        rmse,
+        predicted_price,
+        y_test.values[-1],
+        ci_lower,
+        ci_upper,
+        best_params,
+        y_test.values.ravel(),   # ensure 1D
+        np.array(y_pred).ravel() # ensure 1D
+    )
 
 # --------------------------------------
 # Backtest function
@@ -153,27 +153,6 @@ def backtest_model_performance(y_true, y_pred):
     st.pyplot(fig)
 
 # --------------------------------------
-# Trade logging & risk management
-# --------------------------------------
-def log_trade(ticker, entry, target, stop, position_size, notes=""):
-    os.makedirs("./trade_logs", exist_ok=True)
-    log_file = "./trade_logs/trades.csv"
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    trade = pd.DataFrame([{
-        "Datetime": now,
-        "Ticker": ticker,
-        "Entry": entry,
-        "Target": target,
-        "Stop": stop,
-        "PositionSize": position_size,
-        "Notes": notes
-    }])
-    if os.path.exists(log_file):
-        trade.to_csv(log_file, mode="a", header=False, index=False)
-    else:
-        trade.to_csv(log_file, index=False)
-
-# --------------------------------------
 # Sidebar inputs
 # --------------------------------------
 st.sidebar.header("Settings")
@@ -191,13 +170,6 @@ local_sp500_path = "sp500.csv"
 run_backtest = st.sidebar.checkbox("Run Backtest on Test Set", value=False)
 scan_sp500 = st.sidebar.button("🔍 Scan S&P 500")
 
-# Risk management
-st.sidebar.subheader("Risk Management")
-account_size = st.sidebar.number_input("Account Size ($)", value=10000)
-risk_pct = st.sidebar.slider("Risk per Trade (%)", 0.5, 5.0, 1.0)
-atr_mult = st.sidebar.slider("ATR Stop Multiplier", 1.0, 5.0, 2.0)
-take_profit_mult = st.sidebar.slider("Take Profit Multiplier", 1.0, 5.0, 3.0)
-
 # --------------------------------------
 # Main App
 # --------------------------------------
@@ -209,11 +181,9 @@ y_true_all, y_pred_all = None, None
 try:
     df = get_stock_data(ticker, "1y")
     df = add_technical_indicators(df)
-    df = add_atr(df)
     df.dropna(inplace=True)
 
     latest_close = df['Close'].iloc[-1]
-    latest_atr = df['ATR'].iloc[-1]
     log_returns = np.log(df['Close'] / df['Close'].shift(1)).dropna()
     mu, sigma = log_returns.mean(), log_returns.std()
 
@@ -237,23 +207,6 @@ try:
     if ci_lower and ci_upper:
         st.write(f"95% CI: {ci_lower:.2f} - {ci_upper:.2f}")
     st.write(f"RMSE: {rmse:.2f}")
-
-    # Risk management calc
-    stop_loss = latest_close - atr_mult * latest_atr
-    take_profit = latest_close + take_profit_mult * latest_atr
-    risk_per_share = latest_close - stop_loss
-    dollar_risk = account_size * (risk_pct / 100)
-    position_size = int(dollar_risk / risk_per_share) if risk_per_share > 0 else 0
-
-    st.subheader("Trade Setup (Risk Management)")
-    st.write(f"Entry Price: {latest_close:.2f}")
-    st.write(f"Stop Loss: {stop_loss:.2f}")
-    st.write(f"Take Profit: {take_profit:.2f}")
-    st.write(f"Position Size: {position_size} shares (Risk {risk_pct:.1f}% of ${account_size:,.0f})")
-
-    if st.button("💾 Log Trade"):
-        log_trade(ticker, latest_close, take_profit, stop_loss, position_size, notes=f"Model={model_choice}")
-        st.success("Trade logged!")
 
 except Exception as e:
     st.error(f"Error loading data or running simulation: {e}")
@@ -292,7 +245,6 @@ if scan_sp500:
             try:
                 df_t = get_stock_data(ticker_sym, "1y")
                 df_t = add_technical_indicators(df_t)
-                df_t = add_atr(df_t)
                 df_t.dropna(inplace=True)
                 if len(df_t) < 80:
                     return None
