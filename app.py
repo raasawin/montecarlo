@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split, GridSearchCV, TimeSeriesSp
 from sklearn.utils import resample
 from xgboost import XGBRegressor
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 # --------------------------------------
 # Utility functions
@@ -19,6 +20,7 @@ def get_stock_data(ticker, period="1y"):
     return df
 
 def add_technical_indicators(df):
+    df = df.copy()
     df["SMA_20"] = df["Close"].rolling(window=20).mean()
     df["Momentum"] = df["Close"].diff(4)
     df["Volatility"] = df["Close"].rolling(window=20).std()
@@ -36,15 +38,16 @@ def add_technical_indicators(df):
     df["EMA_26"] = df["Close"].ewm(span=26, adjust=False).mean()
     df["MACD"] = df["EMA_12"] - df["EMA_26"]
     df["MACD_Signal"] = df["MACD"].ewm(span=9, adjust=False).mean()
+    df.dropna(inplace=True)
     return df
 
 def monte_carlo_simulation(last_price, mu, sigma, T, n_steps, n_simulations):
-    dt = T / n_steps
+    dt_val = T / n_steps
     prices = np.zeros((n_steps, n_simulations))
     prices[0] = last_price
     for t in range(1, n_steps):
         rand = np.random.standard_normal(n_simulations)
-        prices[t] = prices[t - 1] * np.exp((mu - 0.5 * sigma ** 2) * dt + sigma * np.sqrt(dt) * rand)
+        prices[t] = prices[t - 1] * np.exp((mu - 0.5 * sigma**2) * dt_val + sigma * np.sqrt(dt_val) * rand)
     return prices
 
 # --------------------------------------
@@ -52,33 +55,37 @@ def monte_carlo_simulation(last_price, mu, sigma, T, n_steps, n_simulations):
 # --------------------------------------
 def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
                    bootstrap_iters=1000, use_gridsearch=False, use_bootstrap=False, progress_bar=None):
+    df = df.copy()
     df['EPS'] = eps
     df['Target'] = df['Close'].shift(-n_days_ahead)
-    df = df.dropna()
-
+    df.dropna(inplace=True)
+    
     features = ['Close', 'SMA_20', 'Momentum', 'Volatility', 'Volume_Change', 'EPS',
                 'SMA_50', 'EMA_20', 'RSI_14', 'MACD', 'MACD_Signal']
     X = df[features].astype(float)
     y = df['Target'].astype(float)
-
+    
     X_train, X_test, y_train, y_test = train_test_split(X, y, shuffle=False, test_size=0.2)
+    
+    # Ensure 1D arrays
+    y_train = np.ravel(y_train)
+    y_test = np.ravel(y_test)
+    
     if len(X_train) < 20:
         raise ValueError("Not enough valid data to train the model. Try selecting a longer period.")
-
+    
     if model_choice == "RandomForest":
         if use_gridsearch:
             param_grid = {'n_estimators': [100, 200], 'max_depth': [None, 5, 10]}
             tscv = TimeSeriesSplit(n_splits=5)
-            model = GridSearchCV(RandomForestRegressor(random_state=0),
-                                 param_grid, cv=tscv, scoring='neg_mean_squared_error')
+            model = GridSearchCV(RandomForestRegressor(random_state=0), param_grid, cv=tscv,
+                                 scoring='neg_mean_squared_error')
             model.fit(X_train, y_train)
             best_model = model.best_estimator_
             best_params = model.best_params_
         else:
             best_model = RandomForestRegressor(n_estimators=100, random_state=0)
-            st.write("Training Random Forest...")
             best_model.fit(X_train, y_train)
-            st.write("Training complete!")
             best_params = {'n_estimators': 100, 'max_depth': None}
     else:  # XGBoost
         n_estimators = 50 if len(X_train) < 200 else 300
@@ -93,55 +100,51 @@ def train_ml_model(df, n_days_ahead, eps, model_choice="RandomForest",
             verbosity=0,
             n_jobs=1
         )
-        st.write("Training XGBoost, please wait...")
         best_model.fit(X_train, y_train)
-        st.write("Training complete!")
         best_params = best_model.get_params()
-
+    
     y_pred = best_model.predict(X_test)
-
     rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-
-    # Fix: ensure latest_features is 2D numeric array
-    latest_features = X.iloc[[-1]].to_numpy().reshape(1, -1)
+    latest_features = X.iloc[[-1]].astype(float)
     predicted_price = best_model.predict(latest_features)[0]
-
+    
     ci_lower, ci_upper = None, None
     if use_bootstrap and progress_bar:
         boot_preds = []
         for i in range(bootstrap_iters):
             X_res, y_res = resample(X_train, y_train)
+            X_res = np.array(X_res, dtype=float)
+            y_res = np.ravel(y_res)
             rf = RandomForestRegressor(**best_model.get_params())
             rf.fit(X_res, y_res)
-            boot_pred = rf.predict(latest_features)[0]
-            boot_preds.append(boot_pred)
+            boot_preds.append(rf.predict(latest_features)[0])
             if i % max(1, bootstrap_iters // 100) == 0:
                 progress_bar.progress(min(i / bootstrap_iters, 1.0))
         ci_lower = np.percentile(boot_preds, 2.5)
         ci_upper = np.percentile(boot_preds, 97.5)
-
-    return best_model, rmse, predicted_price, y_test.values[-1], ci_lower, ci_upper, best_params, y_test.values, y_pred
+    
+    return best_model, rmse, predicted_price, y_test[-1], ci_lower, ci_upper, best_params, y_test, y_pred
 
 # --------------------------------------
 # Backtest function
 # --------------------------------------
 def backtest_model_performance(y_true, y_pred):
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, ax = plt.subplots(figsize=(10,5))
     ax.plot(y_true, label="Actual")
     ax.plot(y_pred, label="Predicted")
     ax.set_title("Backtest: Actual vs Predicted")
     ax.legend()
     st.pyplot(fig)
-
-    fig, ax = plt.subplots(figsize=(10, 4))
+    
+    fig, ax = plt.subplots(figsize=(10,4))
     ax.scatter(y_true, y_pred, alpha=0.6)
     ax.plot([min(y_true), max(y_true)], [min(y_true), max(y_true)], 'r--')
     ax.set_xlabel("Actual")
     ax.set_ylabel("Predicted")
     ax.set_title("Predicted vs Actual Scatter")
     st.pyplot(fig)
-
-    fig, ax = plt.subplots(figsize=(10, 4))
+    
+    fig, ax = plt.subplots(figsize=(10,4))
     residuals = y_true - y_pred
     ax.hist(residuals, bins=30, alpha=0.7)
     ax.set_title("Residuals Distribution")
@@ -248,16 +251,14 @@ if scan_sp500:
                 log_returns_t = np.log(df_t['Close'] / df_t['Close'].shift(1)).dropna()
                 mu_t, sigma_t = log_returns_t.mean(), log_returns_t.std()
 
-                sim_t = monte_carlo_simulation(latest_close_t, mu_t, sigma_t, n_days, n_days,
-                                               max(200, min(1000, n_simulations//2)))
+                sim_t = monte_carlo_simulation(latest_close_t, mu_t, sigma_t, n_days, n_days, max(200, min(1000, n_simulations//2)))
                 mc_median = float(np.median(sim_t[-1, :]))
                 mc_change_pct = (mc_median - latest_close_t) / latest_close_t * 100.0
 
                 try:
                     _, _, pred_t, _, _, _, _, _, _ = train_ml_model(df_t, n_days, eps,
                                                                     model_choice=model_choice,
-                                                                    bootstrap_iters=100, use_gridsearch=False,
-                                                                    use_bootstrap=False,
+                                                                    bootstrap_iters=100, use_gridsearch=False, use_bootstrap=False,
                                                                     progress_bar=None)
                     ml_change_pct_t = (pred_t - latest_close_t) / latest_close_t * 100.0
                 except Exception:
@@ -282,11 +283,9 @@ if scan_sp500:
             except Exception:
                 return None
 
-        placeholder = st.empty()
         progress_bar = st.progress(0)
         results = []
         max_workers = min(16, max(4, (len(tickers)//10) + 1))
-
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(process_ticker, t): t for t in tickers}
             total = len(futures)
@@ -297,7 +296,6 @@ if scan_sp500:
                 res = fut.result()
                 if res is not None:
                     results.append(res)
-
         progress_bar.empty()
 
         if not results:
@@ -315,8 +313,7 @@ if scan_sp500:
             }))
 
             csv = df_results.to_csv(index=False)
-            st.download_button("⬇️ Download full results (CSV)", csv,
-                               file_name="sp500_scan_results.csv", mime="text/csv")
+            st.download_button("⬇️ Download full results (CSV)", csv, file_name="sp500_scan_results.csv", mime="text/csv")
 
             best = df_results.iloc[0]
             st.markdown(f"**Top pick:** {best['Ticker']} — Score: {best['Score']:+.2f}% | "
