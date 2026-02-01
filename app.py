@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 from xgboost import XGBRegressor
 from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error # <--- This was missing
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import plotly.graph_objects as go
 import datetime as dt
@@ -152,6 +153,8 @@ def scan_ticker(ticker, n_days):
         
         # 2. Run MC (Lighter version for speed)
         paths = monte_carlo_bootstrap(df, n_sims=200, n_days=n_days, current_price=current_price)
+        if paths is None: return None
+        
         p50 = np.percentile(paths[-1, :], 50)
         mc_pred_pct = (p50 / current_price) - 1
         
@@ -196,83 +199,89 @@ if mode == "Single Stock Analysis":
         
         # --- 1. ML Analysis ---
         model, ml_pred, rmse, feats = train_xgb_model(df, forecast_days)
-        target_price_ml = current_price * (1 + ml_pred)
         
-        # --- 2. MC Analysis ---
-        mc_paths = monte_carlo_bootstrap(df, sim_count, forecast_days, current_price)
-        p05 = np.percentile(mc_paths[-1, :], 5)
-        p50 = np.percentile(mc_paths[-1, :], 50)
-        p95 = np.percentile(mc_paths[-1, :], 95)
-        mc_pred = (p50 / current_price) - 1
-        
-        # Display Metrics
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("ML Forecast", f"{ml_pred*100:.2f}%", f"${target_price_ml:.2f}")
-        col2.metric("MC Median", f"{mc_pred*100:.2f}%", f"${p50:.2f}")
-        col3.metric("MC Bull (95%)", f"${p95:.2f}")
-        col4.metric("MC Bear (5%)", f"${p05:.2f}")
-        
-        # Charts
-        tab1, tab2 = st.tabs(["Monte Carlo Cloud", "Feature Importance"])
-        
-        with tab1:
-            fig_mc = go.Figure()
-            # Downsample paths for rendering speed
-            subset = mc_paths[:, :100]
-            for i in range(subset.shape[1]):
-                fig_mc.add_trace(go.Scatter(y=subset[:, i], mode='lines', line=dict(color='gray', width=0.5), opacity=0.3, showlegend=False))
-            fig_mc.add_trace(go.Scatter(x=[forecast_days-1], y=[target_price_ml], mode='markers', marker=dict(color='red', size=15, symbol='star'), name='ML Target'))
-            fig_mc.update_layout(title="Monte Carlo Paths vs ML Target (Red Star)", height=500)
-            st.plotly_chart(fig_mc, use_container_width=True)
+        if model is not None:
+            target_price_ml = current_price * (1 + ml_pred)
             
-        with tab2:
-            importance = pd.DataFrame({'Feature': feats, 'Importance': model.feature_importances_}).sort_values('Importance', ascending=False)
-            st.bar_chart(importance.set_index('Feature'))
+            # --- 2. MC Analysis ---
+            mc_paths = monte_carlo_bootstrap(df, sim_count, forecast_days, current_price)
+            if mc_paths is not None:
+                p05 = np.percentile(mc_paths[-1, :], 5)
+                p50 = np.percentile(mc_paths[-1, :], 50)
+                p95 = np.percentile(mc_paths[-1, :], 95)
+                mc_pred = (p50 / current_price) - 1
+                
+                # Display Metrics
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("ML Forecast", f"{ml_pred*100:.2f}%", f"${target_price_ml:.2f}")
+                col2.metric("MC Median", f"{mc_pred*100:.2f}%", f"${p50:.2f}")
+                col3.metric("MC Bull (95%)", f"${p95:.2f}")
+                col4.metric("MC Bear (5%)", f"${p05:.2f}")
+                
+                # Charts
+                tab1, tab2 = st.tabs(["Monte Carlo Cloud", "Feature Importance"])
+                
+                with tab1:
+                    fig_mc = go.Figure()
+                    # Downsample paths for rendering speed
+                    subset = mc_paths[:, :100]
+                    for i in range(subset.shape[1]):
+                        fig_mc.add_trace(go.Scatter(y=subset[:, i], mode='lines', line=dict(color='gray', width=0.5), opacity=0.3, showlegend=False))
+                    fig_mc.add_trace(go.Scatter(x=[forecast_days-1], y=[target_price_ml], mode='markers', marker=dict(color='red', size=15, symbol='star'), name='ML Target'))
+                    fig_mc.update_layout(title="Monte Carlo Paths vs ML Target (Red Star)", height=500)
+                    st.plotly_chart(fig_mc, use_container_width=True)
+                    
+                with tab2:
+                    importance = pd.DataFrame({'Feature': feats, 'Importance': model.feature_importances_}).sort_values('Importance', ascending=False)
+                    st.bar_chart(importance.set_index('Feature'))
 
-        # --- 3. Position Sizing & Trade Log ---
-        st.markdown("---")
-        st.subheader("🛠️ Trade Setup & Logger")
-        
-        atr = df['ATR_14'].iloc[-1]
-        stop_dist = atr * atr_mult
-        
-        # Determine direction based on ML
-        direction = "LONG" if ml_pred > 0 else "SHORT"
-        
-        if direction == "LONG":
-            stop_price = current_price - stop_dist
-            risk_per_share = current_price - stop_price
+                # --- 3. Position Sizing & Trade Log ---
+                st.markdown("---")
+                st.subheader("🛠️ Trade Setup & Logger")
+                
+                atr = df['ATR_14'].iloc[-1]
+                stop_dist = atr * atr_mult
+                
+                # Determine direction based on ML
+                direction = "LONG" if ml_pred > 0 else "SHORT"
+                
+                if direction == "LONG":
+                    stop_price = current_price - stop_dist
+                    risk_per_share = current_price - stop_price
+                else:
+                    stop_price = current_price + stop_dist
+                    risk_per_share = stop_price - current_price
+                    
+                risk_amount = account_size * (risk_pct / 100)
+                shares = int(risk_amount // risk_per_share) if risk_per_share > 0 else 0
+                
+                c1, c2, c3, c4 = st.columns(4)
+                c1.info(f"**Direction:** {direction}")
+                c2.info(f"**Entry:** ${current_price:.2f}")
+                c3.info(f"**Stop Loss:** ${stop_price:.2f}")
+                c4.success(f"**Size:** {shares} shares")
+                
+                # Logging
+                if st.button("📝 Log Trade to CSV"):
+                    log_entry = {
+                        "Date": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "Ticker": ticker,
+                        "Direction": direction,
+                        "Entry": current_price,
+                        "Stop": stop_price,
+                        "Target_ML": target_price_ml,
+                        "Shares": shares,
+                        "ML_Conf": ml_pred,
+                        "RMSE": rmse
+                    }
+                    log_path = Path("trade_log.csv")
+                    log_df = pd.DataFrame([log_entry])
+                    log_df.to_csv(log_path, mode='a', header=not log_path.exists(), index=False)
+                    st.success("Trade saved to trade_log.csv")
+            else:
+                st.error("Monte Carlo Simulation failed (insufficient history?)")
         else:
-            stop_price = current_price + stop_dist
-            risk_per_share = stop_price - current_price
-            
-        risk_amount = account_size * (risk_pct / 100)
-        shares = int(risk_amount // risk_per_share) if risk_per_share > 0 else 0
-        
-        c1, c2, c3, c4 = st.columns(4)
-        c1.info(f"**Direction:** {direction}")
-        c2.info(f"**Entry:** ${current_price:.2f}")
-        c3.info(f"**Stop Loss:** ${stop_price:.2f}")
-        c4.success(f"**Size:** {shares} shares")
-        
-        # Logging
-        if st.button("📝 Log Trade to CSV"):
-            log_entry = {
-                "Date": dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
-                "Ticker": ticker,
-                "Direction": direction,
-                "Entry": current_price,
-                "Stop": stop_price,
-                "Target_ML": target_price_ml,
-                "Shares": shares,
-                "ML_Conf": ml_pred,
-                "RMSE": rmse
-            }
-            log_path = Path("trade_log.csv")
-            log_df = pd.DataFrame([log_entry])
-            log_df.to_csv(log_path, mode='a', header=not log_path.exists(), index=False)
-            st.success("Trade saved to trade_log.csv")
-
+            st.error("Model training failed (insufficient data?)")
     else:
         st.error("Could not fetch data. Check ticker.")
 
@@ -284,7 +293,7 @@ elif mode == "Market Scanner":
     
     if st.button("Start Scan (This takes time)"):
         tickers = get_sp500_tickers()
-        # For demo speed, limit to first 50, remove [:50] for full scan
+        # For demo speed, limit to first 50. Remove [:50] for full scan.
         tickers_to_scan = tickers[:50] 
         
         results = []
